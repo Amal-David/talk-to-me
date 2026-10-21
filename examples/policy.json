@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "groups": {
+    "example-group": {
+      "peers": ["agent-a", "agent-b", "owner"],
+      "routes": [
+        { "from": "agent-a", "to": "agent-b", "topics": ["general"], "reply": true },
+        { "from": "agent-b", "to": "agent-a", "topics": ["general"], "reply": true }
+      ]
+    }
+  }
+}

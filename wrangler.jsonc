@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "talk-to-me",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "durable_objects": { "bindings": [{ "name": "GROUPS", "class_name": "GroupMailbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GroupMailbox"] }],
+  "vars": { "POLICY_JSON": "{\"version\":1,\"groups\":{}}" }
+}
