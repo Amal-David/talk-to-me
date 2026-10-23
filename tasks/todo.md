@@ -162,11 +162,13 @@ Each phase ends with `npm run check` and `npm run dry-run` passing and a commit.
 
 ### Phase 2: OAuth approval and Connections page
 
-- [ ] Add `@cloudflare/workers-oauth-provider@1.2.3`, `OAUTH_KV` binding, `global_fetch_strictly_public` flag.
-- [ ] Redirect allowlist in config, validated in `config.ts` like the rest.
-- [ ] `/authorize` approval page with passkey-bound consent; `tokenExchangeCallback` for per-connection expiry.
-- [ ] Connections page: list, revoke, mint connection token.
-- [ ] Tests: full code flow with PKCE against Miniflare; non-allowlisted redirect refused; approval without assertion refused; assertion for one consent rejected for another; revoked connection refused on the very next call.
+- [x] Add `@cloudflare/workers-oauth-provider@1.2.3` and the `OAUTH_KV` binding. Skipped the `global_fetch_strictly_public` flag: it is only needed for CIMD, which stays off after Phase 0.
+- [x] Redirect allowlist `OAUTH_REDIRECT_URIS` (exact URLs, JSON array) validated in `config.ts`; enforced at client registration and again at `/authorize` before the approval page renders. Without a valid relay origin and allowlist the Worker exposes no OAuth endpoints.
+- [x] `/authorize` approval page: the owner picks the peer and an expiry (7, 30 or 90 days) and approves with a passkey whose challenge is bound to the consent handle. The assertion is checked before the consent is consumed, so a failed touch can be retried. `tokenExchangeCallback` sets the refresh lifetime to the connection's expiry and refuses refresh (`invalid_grant`, which also deletes the grant) once the connection is revoked.
+- [x] Connections page (on `/owner`): list live connections, revoke, and mint a `ttm_` connection token behind a fresh step-up. Revocation lives in the Owner object and is checked on every `/mcp` call.
+- [x] `/mcp` answers with the connection's identity as a placeholder until Phase 4 adds the MCP tools.
+- [x] Tests (`tests/oauth.test.mjs`): full DCR + PKCE + passkey + code exchange flow; disallowed redirect refused at registration; approval without an assertion, with another consent's assertion, for an unknown peer or cross-site all refused; revoked connection refused on the next call and on refresh; reconnecting replaces the earlier connection; connection tokens need the mint step-up and stop when revoked. Each guarded rule was mutation-checked.
+- Not done: deleting a revoked grant's KV records immediately. The Owner check makes them useless at once, and the next refresh deletes them.
 
 ### Phase 3: move authentication into the Worker
 

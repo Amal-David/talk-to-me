@@ -1,17 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authenticator, ownerFixture, SETUP_CODE } from "./owner-helpers.mjs";
-
-async function setUp(f, key = authenticator()) {
-  const options = await f.owner("/owner/setup/options", { code: SETUP_CODE });
-  assert.equal(options.status, 200);
-  const done = await f.owner("/owner/setup/verify", {
-    code: SETUP_CODE,
-    response: key.create(options.body),
-  });
-  assert.equal(done.status, 200, JSON.stringify(done.body));
-  return { key, cookie: done.cookie };
-}
+import { authenticator, ownerFixture, SETUP_CODE, setUp } from "./owner-helpers.mjs";
 
 test("setup registers the first passkey once, starts a session and burns the code", async () => {
   const f = await ownerFixture();

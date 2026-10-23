@@ -1,4 +1,4 @@
-import type { Config, Env, GroupPolicy, Limits, Token, WakeEndpoint } from "./types";
+import type { Config, Env, GroupPolicy, Identity, Limits, Token, WakeEndpoint } from "./types";
 import { digest, fail, fields, identifier, integer, object } from "./validation";
 
 export const DEFAULT_LIMITS: Limits = {
@@ -160,6 +160,53 @@ export function wakeEndpoint(env: Env, id: string, name: string, peer: string): 
     fail(400, "invalid_endpoint_token");
   relayOrigin(env); // A wake carries the relay origin, so it must be valid too.
   return { group: name, peer, url: url.href, allowedOrigin: origin.origin, token: item.token };
+}
+// Every group/peer a connection may act as, with the routes that peer may send on.
+export function identities(cfg: Config): Identity[] {
+  return Object.entries(cfg.groups).flatMap(([group, policy]) =>
+    policy.peers.map((peer) => ({
+      group,
+      peer,
+      routes: policy.routes.filter((r) => r.from === peer),
+    })),
+  );
+}
+// A connection's identity travels as "group/peer"; neither part can contain "/".
+export const identityKey = ({ group, peer }: Pick<Identity, "group" | "peer">) =>
+  `${group}/${peer}`;
+export function identity(cfg: Config, value: unknown): Pick<Identity, "group" | "peer"> {
+  const [group, peer, extra] = typeof value === "string" ? value.split("/") : [];
+  if (extra !== undefined || !group || !peer || !cfg.groups[group]?.peers.includes(peer))
+    fail(400, "invalid_identity");
+  return { group: group as string, peer: peer as string };
+}
+export const CONNECTION_DAYS = [7, 30, 90];
+export const LABEL_MAX = 64;
+export function connectionDays(value: unknown): number {
+  if (!CONNECTION_DAYS.includes(value as number)) fail(400, "invalid_expiry");
+  return value as number;
+}
+// Exact redirect URIs an OAuth client may register or use; anything else is refused.
+export function redirectAllowlist(env: Env): string[] {
+  try {
+    const uris = list(JSON.parse(env.OAUTH_REDIRECT_URIS ?? ""), 20).map((input) => {
+      if (typeof input !== "string") fail(400, "invalid_redirect_uri");
+      const url = new URL(input as string);
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        url.hash ||
+        url.href !== input
+      )
+        fail(400, "invalid_redirect_uri");
+      return url.href;
+    });
+    if (!uris.length) fail(400, "empty_redirect_allowlist");
+    return uris;
+  } catch {
+    return fail(503, "configuration_unavailable");
+  }
 }
 export function relayOrigin(env: Env): URL {
   const relay = publicHttps(env.RELAY_PUBLIC_URL);

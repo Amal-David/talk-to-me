@@ -9,10 +9,28 @@ import {
   verifyRegistrationResponse,
 } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
-import { relayOrigin } from "./config";
+import { config, connectionDays, identities, identity, LABEL_MAX, relayOrigin } from "./config";
 import { homePage, setupPage, signInPage } from "./owner-pages";
-import type { CredentialRow, Env } from "./types";
-import { bodyJson, digest, errorResponse, fail, fields, object, response } from "./validation";
+import type {
+  ConnectionGrant,
+  ConnectionProps,
+  ConnectionRow,
+  ConnectionSummary,
+  CredentialRow,
+  Env,
+} from "./types";
+import {
+  bodyJson,
+  digest,
+  errorResponse,
+  fail,
+  fields,
+  HttpError,
+  identifier,
+  object,
+  response,
+  textValue,
+} from "./validation";
 
 const SESSION_COOKIE = "__Host-ttm_owner";
 const SESSION_SECONDS = 900;
@@ -27,8 +45,15 @@ const PURPOSE = {
   signIn: "sign-in",
   addPasskeyStepUp: "step-up:add-passkey",
   addPasskey: "add-passkey",
+  mintTokenStepUp: "step-up:mint-token",
 } as const;
-type Purpose = (typeof PURPOSE)[keyof typeof PURPOSE];
+// An OAuth approval's challenge is bound to the hash of its consent handle.
+type Purpose = (typeof PURPOSE)[keyof typeof PURPOSE] | `approve:${string}`;
+const approvalPurpose = async (handle: string): Promise<Purpose> =>
+  `approve:${await digest(handle)}`;
+const TOKEN_PREFIX = "ttm_";
+// Revoked or expired connections are kept this long for the Connections history, then deleted.
+const DEAD_CONNECTION_MS = 30 * 86_400_000;
 
 function randomToken(): string {
   return isoBase64URL.fromBuffer(crypto.getRandomValues(new Uint8Array(32)));
@@ -50,6 +75,10 @@ export class Owner extends DurableObject<Env> {
       );
       CREATE TABLE IF NOT EXISTS challenges (challenge TEXT PRIMARY KEY, purpose TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS connections (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL, group_name TEXT NOT NULL, peer TEXT NOT NULL, label TEXT NOT NULL,
+        client_id TEXT, token_hash TEXT UNIQUE, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER
+      );
     `);
   }
   private first<T extends Record<string, SqlStorageValue>>(
@@ -182,6 +211,87 @@ export class Owner extends DurableObject<Env> {
     );
   }
 
+  // Called by the Worker over RPC, which the internet cannot reach. RPC drops error classes, so
+  // these return values instead of throwing HttpError.
+  async verifyApproval(handle: string, assertion: unknown): Promise<boolean> {
+    try {
+      await this.authenticate(this.origin(), await approvalPurpose(handle), assertion);
+      return true;
+    } catch (error) {
+      // Only a refused or malformed assertion means "not approved"; anything else is a fault.
+      if (error instanceof HttpError && error.status < 500) return false;
+      throw error;
+    }
+  }
+  createConnection(grant: ConnectionGrant): ConnectionProps {
+    const now = Date.now();
+    const { credential } = grant;
+    this.sql.exec(
+      "DELETE FROM connections WHERE COALESCE(revoked_at, expires_at)<?",
+      now - DEAD_CONNECTION_MS,
+    );
+    // Reconnecting the same client as the same peer replaces the earlier connection, as the
+    // OAuth library does for its grants.
+    if (credential.kind === "oauth")
+      this.sql.exec(
+        "UPDATE connections SET revoked_at=? WHERE kind='oauth' AND client_id=? AND group_name=? AND peer=? AND revoked_at IS NULL",
+        now,
+        credential.clientId,
+        grant.group,
+        grant.peer,
+      );
+    const id = crypto.randomUUID();
+    const expiresAt = now + grant.days * 86_400_000;
+    this.sql.exec(
+      "INSERT INTO connections(id,kind,group_name,peer,label,client_id,token_hash,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
+      id,
+      credential.kind,
+      grant.group,
+      grant.peer,
+      grant.label,
+      credential.kind === "oauth" ? credential.clientId : null,
+      credential.kind === "token" ? credential.tokenHash : null,
+      now,
+      expiresAt,
+    );
+    return { connectionId: id, group: grant.group, peer: grant.peer, expiresAt };
+  }
+  activeConnection(id: string): ConnectionProps | null {
+    return this.live(this.first<ConnectionRow>("SELECT * FROM connections WHERE id=?", id));
+  }
+  async tokenConnection(token: string): Promise<ConnectionProps | null> {
+    if (!token.startsWith(TOKEN_PREFIX)) return null;
+    const hash = await digest(token);
+    return this.live(
+      this.first<ConnectionRow>("SELECT * FROM connections WHERE token_hash=?", hash),
+    );
+  }
+
+  private origin(): URL {
+    try {
+      return relayOrigin(this.env);
+    } catch {
+      return fail(503, "configuration_unavailable");
+    }
+  }
+  private live(row: ConnectionRow | undefined): ConnectionProps | null {
+    if (!row || row.revoked_at !== null || row.expires_at <= Date.now()) return null;
+    return {
+      connectionId: row.id,
+      group: row.group_name,
+      peer: row.peer,
+      expiresAt: row.expires_at,
+    };
+  }
+  private connections(): ConnectionSummary[] {
+    return this.sql
+      .exec<ConnectionSummary>(
+        "SELECT id,kind,label,group_name,peer,expires_at FROM connections WHERE revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC",
+        Date.now(),
+      )
+      .toArray();
+  }
+
   private setupCode(): string {
     const code = this.env.OWNER_SETUP_CODE;
     if (typeof code !== "string" || !/^[A-Za-z0-9_-]{32,256}$/.test(code))
@@ -239,12 +349,7 @@ export class Owner extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     try {
-      let origin: URL;
-      try {
-        origin = relayOrigin(this.env);
-      } catch {
-        return fail(503, "configuration_unavailable");
-      }
+      const origin = this.origin();
       const { pathname } = new URL(request.url);
       if (request.method === "GET") {
         if (pathname === "/owner/setup") return setupPage();
@@ -252,7 +357,7 @@ export class Owner extends DurableObject<Env> {
         if (pathname === "/owner") {
           if (!(await this.session(request)))
             return new Response(null, { status: 303, headers: { Location: "/owner/sign-in" } });
-          return homePage(this.credentials());
+          return homePage(this.credentials(), this.connections(), identities(config(this.env)));
         }
         return fail(404, "not_found");
       }
@@ -272,6 +377,11 @@ export class Owner extends DurableObject<Env> {
         await this.register(origin, PURPOSE.setup, body.response);
         this.put("used_setup_code", hash);
         return this.startSession();
+      }
+      if (pathname === "/owner/approvals/options") {
+        fields(body, ["handle"]);
+        const purpose = await approvalPurpose(textValue(body.handle, 512));
+        return response(await this.authenticationOptions(origin, purpose));
       }
       if (pathname === "/owner/sign-in/options") {
         fields(body, []);
@@ -306,6 +416,36 @@ export class Owner extends DurableObject<Env> {
         fields(body, ["response"]);
         await this.register(origin, PURPOSE.addPasskey, body.response);
         return response({ ok: true });
+      }
+      if (pathname === "/owner/connections/revoke") {
+        fields(body, ["id"]);
+        this.sql.exec(
+          "UPDATE connections SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+          Date.now(),
+          identifier(body.id),
+        );
+        return response({ ok: true });
+      }
+      // Minting a connection token grants access, so it also needs a fresh step-up assertion.
+      if (pathname === "/owner/connections/step-up") {
+        fields(body, []);
+        return response(await this.authenticationOptions(origin, PURPOSE.mintTokenStepUp));
+      }
+      if (pathname === "/owner/connections/token") {
+        fields(body, ["assertion", "identity", "label", "days"]);
+        const target = identity(config(this.env), body.identity);
+        const days = connectionDays(body.days);
+        const label = textValue(body.label, LABEL_MAX);
+        await this.authenticate(origin, PURPOSE.mintTokenStepUp, body.assertion);
+        const token = TOKEN_PREFIX + randomToken();
+        const connection = this.createConnection({
+          ...target,
+          days,
+          label,
+          credential: { kind: "token", tokenHash: await digest(token) },
+        });
+        // The only time the token is visible; the relay keeps its hash.
+        return response({ token, connection });
       }
       return fail(404, "not_found");
     } catch (error) {

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { fixture } from "./helpers.mjs";
 
@@ -8,32 +9,35 @@ export async function ownerFixture(options = {}) {
     ...options,
     bindings: { RELAY_PUBLIC_URL: OWNER_ORIGIN, OWNER_SETUP_CODE: SETUP_CODE, ...options.bindings },
   });
-  // GET when body is undefined, otherwise a JSON POST carrying the relay's Origin header.
-  const owner = async (path, body, { cookie, origin = OWNER_ORIGIN } = {}) => {
-    const headers = {
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...(body !== undefined && origin ? { Origin: origin } : {}),
-      ...(cookie ? { Cookie: cookie } : {}),
-    };
-    const res = await f.mf.dispatchFetch(`${OWNER_ORIGIN}${path}`, {
-      method: body === undefined ? "GET" : "POST",
-      redirect: "manual",
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+  // Any request to the relay origin; the body is parsed as JSON when it is JSON.
+  const request = async (path, init = {}) => {
+    const res = await f.mf.dispatchFetch(`${OWNER_ORIGIN}${path}`, { redirect: "manual", ...init });
     const text = await res.text();
     let parsed = text;
     try {
       parsed = JSON.parse(text);
     } catch {}
+    const cookies = res.headers.getSetCookie();
     return {
       status: res.status,
       body: parsed,
-      cookie: res.headers.get("set-cookie")?.split(";")[0],
+      cookies,
+      cookie: cookies[0]?.split(";")[0],
       location: res.headers.get("location"),
     };
   };
-  return { ...f, owner };
+  // GET when body is undefined, otherwise a JSON POST carrying the relay's Origin header.
+  const owner = (path, body, { cookie, origin = OWNER_ORIGIN } = {}) =>
+    request(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(body !== undefined && origin ? { Origin: origin } : {}),
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  return { ...f, request, owner };
 }
 
 // Minimal CBOR encoder covering what WebAuthn fixtures need: integers, text, bytes and maps.
@@ -133,4 +137,16 @@ export function authenticator() {
       };
     },
   };
+}
+
+// Registers the first passkey through the setup page and returns it with the session cookie.
+export async function setUp(f, key = authenticator()) {
+  const options = await f.owner("/owner/setup/options", { code: SETUP_CODE });
+  assert.equal(options.status, 200);
+  const done = await f.owner("/owner/setup/verify", {
+    code: SETUP_CODE,
+    response: key.create(options.body),
+  });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  return { key, cookie: done.cookie };
 }

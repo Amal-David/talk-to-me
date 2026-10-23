@@ -1,4 +1,5 @@
-import type { CredentialRow } from "./types";
+import { CONNECTION_DAYS, identityKey, LABEL_MAX } from "./config";
+import type { ConnectionSummary, CredentialRow, Identity } from "./types";
 
 const escapeHtml = (value: unknown) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -64,27 +65,90 @@ export function signInPage(): Response {
   );
 }
 
+const date = (ms: number | null) => (ms === null ? "never" : new Date(ms).toISOString());
+
+function identityChoices(identities: Identity[]): string {
+  const options = identities
+    .map(({ group, peer, routes }) => {
+      const sends = routes.map((r) => `${r.to} (${r.topics.join(", ")})`).join("; ") || "nothing";
+      return `<option value="${escapeHtml(identityKey({ group, peer }))}">${escapeHtml(`${peer} in ${group}`)}, can send to: ${escapeHtml(sends)}</option>`;
+    })
+    .join("");
+  const days = CONNECTION_DAYS.map((d) => `<option value="${d}">${d} days</option>`).join("");
+  return `<p><label>Act as <select id="identity">${options}</select></label></p>
+<p><label>Expires after <select id="days">${days}</select></label></p>`;
+}
+const CHOICES_SCRIPT = `const choices = () => ({ identity: document.getElementById('identity').value, days: Number(document.getElementById('days').value) });`;
+
 export function homePage(
   credentials: Pick<CredentialRow, "id" | "created_at" | "last_used_at">[],
+  connections: ConnectionSummary[],
+  identities: Identity[],
 ): Response {
-  const date = (ms: number | null) => (ms === null ? "never" : new Date(ms).toISOString());
-  const rows = credentials
+  const passkeys = credentials
     .map(
       (c) =>
         `<li><code>${escapeHtml(c.id.slice(0, 12))}…</code> added ${escapeHtml(date(c.created_at))}, last used ${escapeHtml(date(c.last_used_at))}</li>`,
     )
     .join("");
+  const live = connections
+    .map(
+      (c) =>
+        `<li>${escapeHtml(c.kind === "oauth" ? "App" : "Token")} <strong>${escapeHtml(c.label)}</strong> as ${escapeHtml(`${c.peer} in ${c.group_name}`)}, expires ${escapeHtml(date(c.expires_at))} <button data-revoke="${escapeHtml(c.id)}">Revoke</button></li>`,
+    )
+    .join("");
   return page(
     "Relay owner",
-    `<h2>Passkeys</h2><ul>${rows}</ul>
+    `<h2>Connections</h2><ul>${live || "<li>None</li>"}</ul>
+<h3>New connection token</h3>
+<p>For hosts that take a header instead of signing in. Shown once.</p>
+${identityChoices(identities)}
+<p><label>Label <input id="label" maxlength="${LABEL_MAX}"></label></p>
+<p><button id="mint">Create token with passkey</button></p><p><code id="token"></code></p>
+<h2>Passkeys</h2><ul>${passkeys}</ul>
 <p>Keep at least two passkeys on different devices so losing one doesn't lock you out.</p>
 <p><button id="add">Add passkey</button> <button id="out">Sign out</button></p>`,
-    `run('add', async () => {
+    `${CHOICES_SCRIPT}
+document.addEventListener('click', (e) => {
+  const id = e.target.dataset && e.target.dataset.revoke;
+  if (id) post('/owner/connections/revoke', { id }).then(() => location.reload(), (err) => show('Failed: ' + err.message));
+});
+run('mint', async () => {
+  const assertion = await get(await post('/owner/connections/step-up', {}));
+  const label = document.getElementById('label').value.trim();
+  const { token } = await post('/owner/connections/token', { assertion, label, ...choices() });
+  document.getElementById('token').textContent = token;
+  show('Copy this token now; it will not be shown again.');
+});
+run('add', async () => {
   const assertion = await get(await post('/owner/passkeys/step-up', {}));
   const response = await create(await post('/owner/passkeys/options', { assertion }));
   await post('/owner/passkeys/verify', { response });
   location.reload();
 });
 run('out', async () => { await post('/owner/sign-out', {}); location.href = '/owner/sign-in'; });`,
+  );
+}
+
+export function approvalPage(
+  consent: { clientName: string; clientDomain?: string; redirectHost: string },
+  handle: string,
+  identities: Identity[],
+): Response {
+  return page(
+    `Connect ${consent.clientName}?`,
+    `<p>${consent.clientDomain ? `Published by <strong>${escapeHtml(consent.clientDomain)}</strong>.` : "This app registered itself; its name is not verified."}</p>
+<p>Access will be sent to <strong>${escapeHtml(consent.redirectHost)}</strong>.</p>
+${identityChoices(identities)}
+<p><button id="approve">Approve with passkey</button> <button id="deny">Deny</button></p>
+<input type="hidden" id="handle" value="${escapeHtml(handle)}">`,
+    `${CHOICES_SCRIPT}
+const handle = document.getElementById('handle').value;
+const finish = async (body) => { location.href = (await post('/authorize', body)).redirectTo; };
+run('approve', async () => {
+  const assertion = await get(await post('/owner/approvals/options', { handle }));
+  await finish({ handle, decision: 'approve', assertion, ...choices() });
+});
+run('deny', () => finish({ handle, decision: 'deny' }));`,
   );
 }
