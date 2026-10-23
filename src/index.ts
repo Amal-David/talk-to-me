@@ -3,12 +3,16 @@ import type { Env } from "./types";
 import { errorResponse, fail, response } from "./validation";
 
 export { GroupMailbox } from "./mailbox";
+export { Owner } from "./owner";
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
       if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
         fail(400, "https_required");
+      // Owner pages carry their own configuration and authentication.
+      if ((url.pathname === "/owner" || url.pathname.startsWith("/owner/")) && !url.search)
+        return env.OWNER.get(env.OWNER.idFromName("owner")).fetch(request);
       const cfg = config(env);
       if (url.pathname === "/health" && request.method === "GET")
         return response({ ok: true, protocol: "talk-to-me/1" });

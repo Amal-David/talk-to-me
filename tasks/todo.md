@@ -152,11 +152,13 @@ Each phase ends with `npm run check` and `npm run dry-run` passing and a commit.
 
 ### Phase 1: owner identity
 
-- [ ] Add `@simplewebauthn/server@14.0.3` (with the `asn1js` override); prove it verifies a registration inside Miniflare before writing anything else.
-- [ ] `Owner` Durable Object and migration.
-- [ ] Setup page: setup code (at least 128 bits, compared by hash in constant time, attempts rate-limited) + first passkey; code consumed.
-- [ ] Sign-in, session, sign-out; add another passkey (fresh assertion).
-- [ ] Software authenticator in `tests/helpers.mjs` (node:crypto ES256 key, hand-built authenticator data, minimal CBOR for `none` attestation). Tests: wrong origin, wrong RP ID, missing user verification, replayed challenge, counter not advancing, setup code reused.
+- [x] Add `@simplewebauthn/server@14.0.3`; proved it verifies a registration inside Miniflare before building on it. No override needed: installing with `--before=2026-10-16` resolved `asn1js@3.0.10`.
+- [x] `Owner` Durable Object (`src/owner.ts`) and migration `v2`. Pages in `src/owner-pages.ts`.
+- [x] Setup page: `OWNER_SETUP_CODE` (32+ URL-safe characters), compared by SHA-256 hash in constant time, 5 failed guesses per 15 minutes; each code value works once, so a new value is the recovery path.
+- [x] Sign-in, 15-minute `__Host-` session (`HttpOnly; Secure; SameSite=Strict`), sign-out; add another passkey after a fresh step-up assertion.
+- [x] Software authenticator in `tests/helpers.mjs`; `tests/owner.test.mjs` covers wrong origin, wrong RP ID, missing user verification, replayed and cross-purpose challenges, non-advancing counter, reused and guessed setup codes, Origin checks, sign-out, fail-closed config, and a challenge flood that must not lock the owner out.
+- Also: re-pinned `wrangler` and `@cloudflare/workers-types` under the cooldown, and the test build now resolves packages the way Workers does (`--main-fields=module,main --conditions=workerd,worker,browser`).
+- The relay origin comes from the existing `RELAY_PUBLIC_URL`; the passkey RP ID is its hostname.
 
 ### Phase 2: OAuth approval and Connections page
 

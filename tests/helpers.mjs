@@ -48,7 +48,10 @@ export async function fixture(options = {}) {
     modules: true,
     scriptPath: resolve("dist/worker.js"),
     compatibilityDate: "2026-07-30",
-    durableObjects: { GROUPS: { className: "GroupMailbox", useSQLite: true } },
+    durableObjects: {
+      GROUPS: { className: "GroupMailbox", useSQLite: true },
+      OWNER: { className: "Owner", useSQLite: true },
+    },
     bindings,
     ...(options.persist ? { durableObjectsPersist: options.persist } : {}),
     // All tests deny network access unless an explicit offline fake is supplied.

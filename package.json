@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "wrangler dev --local",
-    "build": "esbuild src/index.ts --bundle --format=esm --platform=neutral --external:cloudflare:workers --outfile=dist/worker.js",
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=neutral --main-fields=module,main --conditions=workerd,worker,browser --external:cloudflare:workers --outfile=dist/worker.js",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
@@ -34,5 +34,8 @@
       "sharp": "0.35.5",
       "undici": "7.29.1"
     }
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "14.0.3"
   }
 }

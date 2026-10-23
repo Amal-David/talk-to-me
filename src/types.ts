@@ -1,5 +1,7 @@
 export interface Env {
   GROUPS: DurableObjectNamespace;
+  OWNER: DurableObjectNamespace;
+  OWNER_SETUP_CODE?: string;
   POLICY_JSON?: string;
   AUTH_TOKENS_JSON?: string;
   WAKE_ENDPOINTS_JSON?: string;
@@ -46,6 +48,14 @@ export interface WakeEndpoint {
   url: string;
   allowedOrigin: string;
   token: string;
+}
+export interface CredentialRow extends Record<string, SqlStorageValue> {
+  id: string;
+  public_key: string;
+  counter: number;
+  transports: string;
+  created_at: number;
+  last_used_at: number | null;
 }
 export type RequestState =
   | "pending"

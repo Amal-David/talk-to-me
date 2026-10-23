@@ -158,7 +158,11 @@ export function wakeEndpoint(env: Env, id: string, name: string, peer: string): 
     fail(400, "invalid_endpoint_origin");
   if (typeof item.token !== "string" || !/^[A-Za-z0-9._~+/-]{16,256}={0,2}$/.test(item.token))
     fail(400, "invalid_endpoint_token");
+  relayOrigin(env); // A wake carries the relay origin, so it must be valid too.
+  return { group: name, peer, url: url.href, allowedOrigin: origin.origin, token: item.token };
+}
+export function relayOrigin(env: Env): URL {
   const relay = publicHttps(env.RELAY_PUBLIC_URL);
   if (relay.href !== `${relay.origin}/`) fail(400, "invalid_relay_origin");
-  return { group: name, peer, url: url.href, allowedOrigin: origin.origin, token: item.token };
+  return relay;
 }
