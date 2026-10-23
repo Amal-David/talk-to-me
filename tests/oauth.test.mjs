@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import test from "node:test";
-import { OWNER_ORIGIN, ownerFixture, setUp } from "./owner-helpers.mjs";
+import { CHATGPT_REDIRECT, OWNER_ORIGIN, oauthFixture, setUp, tool } from "./owner-helpers.mjs";
 
-const REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
+const REDIRECT = CHATGPT_REDIRECT;
 const RESOURCE = `${OWNER_ORIGIN}/mcp`;
-const oauthFixture = () =>
-  ownerFixture({ bindings: { OAUTH_REDIRECT_URIS: JSON.stringify([REDIRECT]) } });
 
 const call = (f, path, init) => f.request(path, init);
 const json = (body, headers = {}) => ({
@@ -88,7 +86,11 @@ async function connect(f, key, clientId, identity = "demo/alpha") {
 // Live connections listed on the owner page, including the fixture's seeded peer tokens.
 const connectionRows = async (f, cookie) =>
   (await f.owner("/owner", undefined, { cookie })).body.match(/data-revoke=/g)?.length ?? 0;
-const whoami = (f, token) => call(f, "/mcp", { headers: { Authorization: `Bearer ${token}` } });
+// Which peer a credential acts as, through the who_am_i MCP tool; 401 once it stops being live.
+const whoami = (f, token) => tool(f, token, "who_am_i");
+// The owner page lists live connections newest first.
+const newestConnectionId = async (f, cookie) =>
+  /data-revoke="([^"]+)"/.exec((await f.owner("/owner", undefined, { cookie })).body)?.[1];
 
 test("a host connects with one passkey approval and acts as the chosen peer", async () => {
   const f = await oauthFixture();
@@ -101,7 +103,7 @@ test("a host connects with one passkey approval and acts as the chosen peer", as
     assert.ok(tokens.refresh_token);
     const me = await whoami(f, tokens.access_token);
     assert.equal(me.status, 200);
-    assert.deepEqual([me.body.connection.group, me.body.connection.peer], ["demo", "beta"]);
+    assert.deepEqual([me.data.group, me.data.peer], ["demo", "beta"]);
     const home = await f.owner("/owner", undefined, { cookie });
     assert.ok(home.body.includes("Synthetic host"));
   } finally {
@@ -158,7 +160,8 @@ test("revoking a connection stops its access token on the next call and blocks r
     const { key, cookie } = await setUp(f);
     const clientId = (await register(f)).body.client_id;
     const tokens = await connect(f, key, clientId);
-    const id = (await whoami(f, tokens.access_token)).body.connection.connectionId;
+    assert.equal((await whoami(f, tokens.access_token)).status, 200);
+    const id = await newestConnectionId(f, cookie);
     assert.equal((await f.owner("/owner/connections/revoke", { id }, { cookie })).status, 200);
     assert.equal((await whoami(f, tokens.access_token)).status, 401);
     const refresh = await call(
@@ -215,7 +218,7 @@ test("connection tokens need a mint step-up, act as the chosen peer and stop whe
     assert.equal(minted.status, 200);
     assert.match(minted.body.token, /^ttm_/);
     const me = await whoami(f, minted.body.token);
-    assert.deepEqual([me.status, me.body.connection.peer], [200, "gamma"]);
+    assert.deepEqual([me.status, me.data.peer], [200, "gamma"]);
     assert.equal((await whoami(f, `ttm_${"x".repeat(43)}`)).status, 401);
     const id = minted.body.connection.connectionId;
     assert.equal((await f.owner("/owner/connections/revoke", { id }, { cookie })).status, 200);

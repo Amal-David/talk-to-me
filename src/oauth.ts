@@ -6,6 +6,7 @@ import {
   OAuthProvider,
 } from "@cloudflare/workers-oauth-provider";
 import { config, connectionDays, identities, identity, identityKey, LABEL_MAX } from "./config";
+import { mcpResponse } from "./mcp";
 import { approvalPage } from "./owner-pages";
 import type { ConnectionProps, Env } from "./types";
 import { bodyJson, errorResponse, fail, fields, response, textValue } from "./validation";
@@ -75,11 +76,11 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
   return withLibraryHeaders(response({ redirectTo }), approved.headers);
 }
 
-// Placeholder until the MCP tools exist: answers with the connection's identity.
-async function protectedResource(_request: Request, env: Env, ctx: ExecutionContext) {
+// The MCP endpoint. The Owner object's check makes revocation take effect on the next call.
+async function protectedResource(request: Request, env: Env, ctx: ExecutionContext) {
   const props = ctx.props as ConnectionProps;
   const live = await owner(env).activeConnection(props.connectionId);
-  if (live) return response({ connection: live });
+  if (live) return mcpResponse(request, env, { group: live.group, peer: live.peer });
   const res = response({ error: "invalid_token" }, 401);
   res.headers.set("WWW-Authenticate", 'Bearer error="invalid_token"');
   return res;

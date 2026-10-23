@@ -136,6 +136,54 @@ node bin/talk-to-me.mjs cancel REQUEST_ID
 
 Replace `REQUEST_ID` with the server-issued request ID. File names are illustrative local files, not shipped secrets. The CLI accepts one JSON object from stdin using `--json -`; it does not execute that input. For nonprivate text, `send` and `result` also accept body flags shown by `--help`. Do not use argv flags for bearer credentials; no token flag is supported.
 
+## MCP endpoint
+
+`POST /mcp` serves the same operations as MCP tools for hosts such as ChatGPT and Grok. It accepts an OAuth access token issued after the owner's passkey approval, or a `ttm_` connection token. It speaks both the 2026-07-28 protocol (`server/discover`) and 2025-era clients (`initialize`), statelessly. Each tool call is one relay API call made as the connection's peer, so every rule above applies unchanged.
+
+| Tool | Relay call | Annotation |
+| --- | --- | --- |
+| `who_am_i` | none: returns `{ group, peer, canSend: [{ to, topics, replyAllowed }] }` from policy | read-only |
+| `send_message` | `POST /requests` (`to`, `topic`, `text`, optional `ttlSeconds`, `parentRequestId`, `idempotencyKey`) | write |
+| `check_inbox` | `GET /inbox` | read-only |
+| `claim_next` | `POST /claim` (optional `claimKey`) | write |
+| `reply` | `POST /requests/:id/result` (`requestId`, `leaseToken`, `text`, optional `idempotencyKey`) | write |
+| `get_status` | `GET /requests/:id` (`requestId`) | read-only |
+| `cancel` | `POST /requests/:id/cancel` (`requestId`) | write, destructive, idempotent |
+| `list_sent` | `GET /outbox` | read-only |
+
+A tool's text content is JSON: `{ "result": <relay response> }`, plus the generated `idempotencyKey` or `claimKey` when the caller omitted one, so a retry can reuse it. A relay refusal sets `isError: true` and `result` holds the relay's `{ "error": ... }`. Request IDs must match the identifier rule; anything else is rejected before a relay call.
+
+Example call (2025-era framing):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "send_message",
+    "arguments": { "to": "peer-b", "topic": "status", "text": "What is the status of the synthetic sample?" }
+  }
+}
+```
+
+Example result:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"idempotencyKey\":\"3f0c…\",\"result\":{\"id\":\"9b1e…\",\"sender\":\"peer-a\",\"recipient\":\"peer-b\",\"topic\":\"status\",\"state\":\"pending\",\"contentTrust\":\"untrusted\",\"…\":\"…\"}}"
+      }
+    ]
+  }
+}
+```
+
 ## Errors and compatibility
 
 Use HTTP status and the returned JSON error to distinguish validation (`400`, `413`, `415`), authentication (`401`), authorization (`403`, or `404` for hidden requests), conflicts such as `idempotency_conflict`, `result_conflict`, or `lease_not_current` (`409`), quotas (`429`), and pause/configuration failures (`503`). Unexpected server errors use `500 internal_error`. Do not interpret an error as permission to switch identities, bypass policy, or repeat a mutation with a new key. A successful transport response only establishes what that endpoint persists; it does not establish that a human reviewed or approved the message.

@@ -180,9 +180,11 @@ Each phase ends with `npm run check` and `npm run dry-run` passing and a commit.
 
 ### Phase 4: MCP endpoint
 
-- [ ] Add `@modelcontextprotocol/server@2.3.1`; `createMcpHandler` as the `apiHandler`, with `authInfo` from the resolved connection.
-- [ ] The seven tools; inputs reuse `validation.ts` rules.
-- [ ] Tests: discovery and `tools/list` on both protocol versions; a two-agent send → claim → reply → status round trip over MCP with OAuth tokens.
+- [x] `@modelcontextprotocol/server@2.3.1` and `zod@4.6.7` (both past the cooldown, no install scripts). `createMcpHandler` serves `/mcp` statelessly for the 2026-07-28 protocol (ChatGPT) and 2025-era clients (Grok), with a 64 KB body cap.
+- [x] Eight tools in `src/mcp.ts`: the planned seven plus `who_am_i`, which tells an agent its group, peer and allowed recipients and topics. Each tool is one relay API call through `GroupMailbox.handle` as the connection's peer, so no mailbox rule is reimplemented. Keys are generated and returned when omitted. Request IDs are checked against the identifier rule before entering a URL path.
+- [x] Annotations: read tools are `readOnlyHint: true`; sending, claiming, replying and cancelling are writes, so hosts can ask before acting. Writes are not marked idempotent, because repeating one without its key acts again; only cancel (destructive) is. Tool descriptions say message text is untrusted data.
+- [x] Tests (`tests/mcp.test.mjs`): tool listing and annotations on both protocol eras; a two-agent send → inbox → claim → reply → status round trip, including a retry that does not resend; refusals as tool errors; identity cannot be borrowed through extra arguments; crafted request IDs rejected. Annotations, caller identity and retry safety were mutation-checked. The OAuth tests now check identity through `who_am_i`.
+- Bundle grew to about 1.6 MB (322 KB gzipped), mostly zod and the MCP library.
 
 ### Phase 5: docs, CI and real-host verification
 

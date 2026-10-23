@@ -150,3 +150,65 @@ export async function setUp(f, key = authenticator()) {
   assert.equal(done.status, 200, JSON.stringify(done.body));
   return { key, cookie: done.cookie };
 }
+
+export const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
+// An owner fixture with OAuth and the MCP endpoint enabled.
+export const oauthFixture = () =>
+  ownerFixture({ bindings: { OAUTH_REDIRECT_URIS: JSON.stringify([CHATGPT_REDIRECT]) } });
+
+export const LEGACY = "2025-11-25";
+export const MODERN = "2026-07-28";
+// One JSON-RPC call to /mcp, shaped the way each protocol era sends it (both seen from real hosts).
+export async function mcpCall(f, token, method, params = {}, version = LEGACY) {
+  const modern = version === MODERN;
+  const meta = {
+    "io.modelcontextprotocol/protocolVersion": version,
+    "io.modelcontextprotocol/clientInfo": { name: "synthetic-client", version: "0" },
+    "io.modelcontextprotocol/clientCapabilities": {},
+  };
+  const res = await f.request("/mcp", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "MCP-Protocol-Version": version,
+      ...(modern ? { "Mcp-Method": method } : {}),
+      ...(modern && params.name ? { "Mcp-Name": params.name } : {}),
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method,
+      params: modern ? { ...params, _meta: meta } : params,
+    }),
+  });
+  // Replies may be a JSON body or a single-event SSE stream.
+  const message =
+    typeof res.body === "string"
+      ? JSON.parse(
+          res.body
+            .split("\n")
+            .find((line) => line.startsWith("data: "))
+            ?.slice(6) ?? "null",
+        )
+      : res.body;
+  return { status: res.status, message };
+}
+// Calls a tool and decodes its JSON text content.
+export async function tool(f, token, name, args = {}, version = LEGACY) {
+  const { status, message } = await mcpCall(
+    f,
+    token,
+    "tools/call",
+    { name, arguments: args },
+    version,
+  );
+  const text = message?.result?.content?.[0]?.text;
+  // Relay results are JSON; argument validation errors are plain text.
+  let data = text;
+  try {
+    data = text && JSON.parse(text);
+  } catch {}
+  return { status, isError: message?.result?.isError === true, data, message };
+}
