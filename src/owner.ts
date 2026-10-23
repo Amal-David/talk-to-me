@@ -9,7 +9,16 @@ import {
   verifyRegistrationResponse,
 } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
-import { config, connectionDays, identities, identity, LABEL_MAX, relayOrigin } from "./config";
+import {
+  config,
+  connectionDays,
+  groupChange,
+  identities,
+  identity,
+  LABEL_MAX,
+  relayOrigin,
+  restoresAccess,
+} from "./config";
 import { homePage, setupPage, signInPage } from "./owner-pages";
 import type {
   ConnectionGrant,
@@ -46,12 +55,22 @@ const PURPOSE = {
   addPasskeyStepUp: "step-up:add-passkey",
   addPasskey: "add-passkey",
   mintTokenStepUp: "step-up:mint-token",
+  restoreStepUp: "step-up:restore",
 } as const;
 // An OAuth approval's challenge is bound to the hash of its consent handle.
 type Purpose = (typeof PURPOSE)[keyof typeof PURPOSE] | `approve:${string}`;
+// Actions that grant or restore access need a fresh assertion made for that purpose, not just a
+// session: adding a passkey, minting a connection token, and resuming a group or enabling a peer.
+const STEP_UP_ROUTES: Partial<Record<string, Purpose>> = {
+  "/owner/passkeys/step-up": PURPOSE.addPasskeyStepUp,
+  "/owner/connections/step-up": PURPOSE.mintTokenStepUp,
+  "/owner/groups/step-up": PURPOSE.restoreStepUp,
+};
 const approvalPurpose = async (handle: string): Promise<Purpose> =>
   `approve:${await digest(handle)}`;
 const TOKEN_PREFIX = "ttm_";
+// A connection token: the prefix plus 32 random bytes in base64url (43 characters).
+export const CONNECTION_TOKEN = /^ttm_[A-Za-z0-9_-]{43}$/;
 // Revoked or expired connections are kept this long for the Connections history, then deleted.
 const DEAD_CONNECTION_MS = 30 * 86_400_000;
 
@@ -260,7 +279,7 @@ export class Owner extends DurableObject<Env> {
     return this.live(this.first<ConnectionRow>("SELECT * FROM connections WHERE id=?", id));
   }
   async tokenConnection(token: string): Promise<ConnectionProps | null> {
-    if (!token.startsWith(TOKEN_PREFIX)) return null;
+    if (!CONNECTION_TOKEN.test(token)) return null;
     const hash = await digest(token);
     return this.live(
       this.first<ConnectionRow>("SELECT * FROM connections WHERE token_hash=?", hash),
@@ -282,6 +301,9 @@ export class Owner extends DurableObject<Env> {
       peer: row.peer,
       expiresAt: row.expires_at,
     };
+  }
+  private group(name: string) {
+    return this.env.GROUPS.get(this.env.GROUPS.idFromName(name));
   }
   private connections(): ConnectionSummary[] {
     return this.sql
@@ -357,7 +379,15 @@ export class Owner extends DurableObject<Env> {
         if (pathname === "/owner") {
           if (!(await this.session(request)))
             return new Response(null, { status: 303, headers: { Location: "/owner/sign-in" } });
-          return homePage(this.credentials(), this.connections(), identities(config(this.env)));
+          const cfg = config(this.env);
+          const groups = await Promise.all(
+            Object.entries(cfg.groups).map(async ([name, policy]) => ({
+              name,
+              peers: policy.peers,
+              ...(await this.group(name).status(name)),
+            })),
+          );
+          return homePage(this.credentials(), this.connections(), identities(cfg), groups);
         }
         return fail(404, "not_found");
       }
@@ -402,10 +432,10 @@ export class Owner extends DurableObject<Env> {
         res.headers.set("Set-Cookie", sessionCookie("", 0));
         return res;
       }
-      // Adding a passkey grants access, so it needs a fresh passkey assertion, not just a session.
-      if (pathname === "/owner/passkeys/step-up") {
+      const stepUp = STEP_UP_ROUTES[pathname];
+      if (stepUp) {
         fields(body, []);
-        return response(await this.authenticationOptions(origin, PURPOSE.addPasskeyStepUp));
+        return response(await this.authenticationOptions(origin, stepUp));
       }
       if (pathname === "/owner/passkeys/options") {
         fields(body, ["assertion"]);
@@ -417,6 +447,17 @@ export class Owner extends DurableObject<Env> {
         await this.register(origin, PURPOSE.addPasskey, body.response);
         return response({ ok: true });
       }
+      if (pathname === "/owner/groups/control") {
+        fields(body, ["group", "action", "peer", "assertion"]);
+        const group = identifier(body.group);
+        const policy = config(this.env).groups[group] ?? fail(404, "unknown_group");
+        const peer = body.peer === undefined ? undefined : identifier(body.peer);
+        if (peer !== undefined && !policy.peers.includes(peer)) fail(404, "unknown_peer");
+        const change = groupChange(body.action, peer);
+        if (restoresAccess(change))
+          await this.authenticate(origin, PURPOSE.restoreStepUp, body.assertion);
+        return response(await this.group(group).control(group, change));
+      }
       if (pathname === "/owner/connections/revoke") {
         fields(body, ["id"]);
         this.sql.exec(
@@ -425,11 +466,6 @@ export class Owner extends DurableObject<Env> {
           identifier(body.id),
         );
         return response({ ok: true });
-      }
-      // Minting a connection token grants access, so it also needs a fresh step-up assertion.
-      if (pathname === "/owner/connections/step-up") {
-        fields(body, []);
-        return response(await this.authenticationOptions(origin, PURPOSE.mintTokenStepUp));
       }
       if (pathname === "/owner/connections/token") {
         fields(body, ["assertion", "identity", "label", "days"]);

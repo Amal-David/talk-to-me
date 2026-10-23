@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import { build } from "esbuild";
 
@@ -10,11 +9,9 @@ const bundled = await build({
   platform: "node",
   write: false,
 });
-const { config, authenticate, wakeEndpoint } = await import(
+const { config, redirectAllowlist, wakeEndpoint } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString("base64")}`
 );
-const TOKEN = "synthetic-review-token-not-a-real-secret-00001";
-const hash = createHash("sha256").update(TOKEN).digest("hex");
 function environment() {
   return {
     POLICY_JSON: JSON.stringify({
@@ -26,9 +23,6 @@ function environment() {
         },
       },
     }),
-    AUTH_TOKENS_JSON: JSON.stringify([
-      { sha256: hash, group: "review", peer: "alpha", role: "peer" },
-    ]),
   };
 }
 function expectClosed(env) {
@@ -55,14 +49,8 @@ function wakeEnvironment(url = "https://hooks.vendor.com/routine") {
   return env;
 }
 
-test("adversarial configuration: missing and malformed registry or policy fail closed", () => {
-  for (const env of [
-    {},
-    { ...environment(), POLICY_JSON: "{" },
-    { ...environment(), AUTH_TOKENS_JSON: "[]" },
-    { ...environment(), AUTH_TOKENS_JSON: "null" },
-  ])
-    expectClosed(env);
+test("adversarial configuration: missing and malformed policy fail closed", () => {
+  for (const env of [{}, { ...environment(), POLICY_JSON: "{" }]) expectClosed(env);
   for (const policy of [
     { version: 2, groups: {} },
     { version: 1, groups: {} },
@@ -71,46 +59,25 @@ test("adversarial configuration: missing and malformed registry or policy fail c
     expectClosed({ ...environment(), POLICY_JSON: JSON.stringify(policy) });
 });
 
-test("adversarial configuration: ambiguous and invalid token bindings are rejected", () => {
-  const env = environment();
-  const valid = JSON.parse(env.AUTH_TOKENS_JSON)[0];
-  for (const records of [
-    [valid, { ...valid, peer: "beta" }],
-    [{ ...valid, role: "superadmin" }],
-    [{ ...valid, peer: "outsider" }],
-    [{ ...valid, group: "other" }],
-    [{ ...valid, sha256: "not-a-hash" }],
-    [{ ...valid, notAfter: 1e30 }],
-  ])
-    expectClosed({ ...env, AUTH_TOKENS_JSON: JSON.stringify(records) });
-});
-
-test("adversarial configuration: authentication binds group, token and expiry", async () => {
-  const cfg = config(environment());
-  const request = (authorization) =>
-    new Request("https://relay.vendor.com", { headers: authorization ? { authorization } : {} });
-  for (const authorization of [
+test("adversarial configuration: the OAuth redirect allowlist accepts only exact HTTPS URIs", () => {
+  const good = "https://chatgpt.com/connector_platform_oauth_redirect";
+  assert.deepEqual(redirectAllowlist({ OAUTH_REDIRECT_URIS: JSON.stringify([good]) }), [good]);
+  for (const value of [
     undefined,
-    "Bearer wrong",
-    `Basic ${TOKEN}`,
-    `Bearer ${TOKEN}x`,
-    `Bearer ${TOKEN}\tinvalid`,
-  ]) {
-    await assert.rejects(
-      authenticate(request(authorization), cfg, "review"),
-      (error) => error.status === 401,
+    "[]",
+    "{}",
+    JSON.stringify([42]),
+    JSON.stringify(["http://chatgpt.com/connector_platform_oauth_redirect"]),
+    JSON.stringify([`${good}#fragment`]),
+    JSON.stringify(["https://user@chatgpt.com/connector_platform_oauth_redirect"]),
+    JSON.stringify(["HTTPS://CHATGPT.COM/connector_platform_oauth_redirect"]),
+    JSON.stringify(Array.from({ length: 21 }, (_, i) => `${good}${i}`)),
+  ])
+    assert.throws(
+      () => redirectAllowlist({ OAUTH_REDIRECT_URIS: value }),
+      (error) => error.status === 503 && error.code === "configuration_unavailable",
+      String(value),
     );
-  }
-  await assert.rejects(
-    authenticate(request(`Bearer ${TOKEN}`), cfg, "other"),
-    (error) => error.status === 401,
-  );
-  assert.equal((await authenticate(request(`Bearer ${TOKEN}`), cfg, "review")).peer, "alpha");
-  cfg.tokens[0].notAfter = Date.now() - 1;
-  await assert.rejects(
-    authenticate(request(`Bearer ${TOKEN}`), cfg, "review"),
-    (error) => error.status === 401,
-  );
 });
 
 test("adversarial configuration: callback rejects literal private destinations and URL ambiguity", () => {

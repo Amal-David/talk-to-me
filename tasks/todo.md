@@ -172,11 +172,11 @@ Each phase ends with `npm run check` and `npm run dry-run` passing and a commit.
 
 ### Phase 3: move authentication into the Worker
 
-- [ ] `GroupMailbox.call(principal, …)` RPC; remove its bearer check and `/control`.
-- [ ] Connection-token resolution for `/v1`; CLI unchanged apart from docs.
-- [ ] Owner pages: pause/resume group, disable/enable peer.
-- [ ] Remove `AUTH_TOKENS_JSON`, the admin role and their config validation.
-- [ ] Port test helpers to mint connection tokens; existing lifecycle tests keep their assertions.
+- [x] `GroupMailbox` has no fetch handler: the Worker calls `handle(request, principal)` over RPC with the resolved group and peer. Its bearer check, admin role and `/control` route are gone; cancel is sender-only.
+- [x] `/v1` accepts only `ttm_` connection tokens, resolved through the Owner object. Unknown, revoked or expired tokens get 401; a token for another group gets 404. The CLI is unchanged apart from its help text.
+- [x] Owner page group controls: pause/resume a group, disable/enable a peer, through `GroupMailbox.control()` RPC. Pause and disable need a session; resume and enable also need a fresh passkey assertion. Disabling a peer is now reversible.
+- [x] Removed `AUTH_TOKENS_JSON`, the `Token` type, `authenticate()` and their config validation.
+- [x] Test fixture seeds deterministic synthetic `ttm_` tokens through the Owner object's RPC (no passkey ceremony) and calls `control()` directly for mailbox tests; the owner pages' control authorization has its own test. The former token-registry tests became tests of what replaced them: cross-group and unknown/expired tokens on `/v1`, and the OAuth redirect allowlist parser. Cross-group, restore step-up and expiry rules were mutation-checked.
 
 ### Phase 4: MCP endpoint
 

@@ -189,3 +189,51 @@ test("a flood of unauthenticated sign-in challenges cannot lock the owner out", 
     await f.close();
   }
 });
+
+test("group controls: pausing needs a session, resuming and enabling need a fresh passkey", async () => {
+  const f = await ownerFixture();
+  try {
+    const { key, cookie } = await setUp(f);
+    const control = (body, auth = { cookie }) => f.owner("/owner/groups/control", body, auth);
+    assert.equal((await control({ group: "demo", action: "pause" }, {})).status, 401);
+    assert.equal((await control({ group: "nope", action: "pause" })).status, 404);
+    assert.equal((await control({ group: "demo", action: "disable", peer: "nope" })).status, 404);
+    for (const body of [
+      { group: "demo", action: "constructor" },
+      { group: "demo", action: "__proto__" },
+      { group: "demo", action: "pause", peer: "beta" },
+      { group: "demo", action: "disable" },
+    ])
+      assert.equal((await control(body)).status, 400, JSON.stringify(body));
+    assert.equal((await control({ group: "demo", action: "pause" })).body.paused, true);
+    assert.deepEqual(
+      (await control({ group: "demo", action: "disable", peer: "beta" })).body.disabled,
+      ["beta"],
+    );
+    assert.equal((await f.api("alpha", "/outbox")).status, 503);
+    const home = await f.owner("/owner", undefined, { cookie });
+    assert.ok(home.body.includes("demo: paused"));
+    assert.ok(home.body.includes("beta: disabled"));
+    // A session alone cannot restore access, and a sign-in assertion cannot stand in.
+    assert.equal((await control({ group: "demo", action: "resume" })).status, 400);
+    const signIn = key.get((await f.owner("/owner/sign-in/options", {})).body);
+    assert.equal(
+      (await control({ group: "demo", action: "resume", assertion: signIn })).status,
+      401,
+    );
+    const stepUp = async () =>
+      key.get((await f.owner("/owner/groups/step-up", {}, { cookie })).body);
+    const resumed = await control({ group: "demo", action: "resume", assertion: await stepUp() });
+    assert.equal(resumed.body.paused, false);
+    const enabled = await control({
+      group: "demo",
+      action: "enable",
+      peer: "beta",
+      assertion: await stepUp(),
+    });
+    assert.deepEqual(enabled.body.disabled, []);
+    assert.equal((await f.api("beta", "/inbox")).status, 200);
+  } finally {
+    await f.close();
+  }
+});

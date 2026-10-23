@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { authTokens, fixture, policy, send, tokens } from "./helpers.mjs";
+import { fixture, policy, send, tokens } from "./helpers.mjs";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function using(options, fn) {
@@ -229,12 +229,13 @@ test("adversarial Worker: cancellation and reply race has one terminal outcome",
   });
 });
 
-test("adversarial Worker: revocation immediately blocks queued and leased traffic", async () => {
+test("adversarial Worker: disabling a peer immediately blocks queued and leased traffic", async () => {
   await using({}, async (f) => {
     const row = await send(f);
     const lease = await claim(f);
-    assert.equal((await f.api("alpha", "/control", "POST", { revokePeer: "beta" })).status, 403);
-    assert.equal((await f.api("admin", "/control", "POST", { revokePeer: "beta" })).status, 200);
+    // Group controls are owner-only RPC; peers have no control route at all.
+    assert.equal((await f.api("alpha", "/control", "POST", { disablePeer: "beta" })).status, 404);
+    assert.deepEqual((await f.control({ disablePeer: "beta" })).disabled, ["beta"]);
     for (const [endpoint, method, body] of [
       [path(row.id), "GET"],
       ["/claim", "POST", { claimKey: "revoked" }],
@@ -256,6 +257,10 @@ test("adversarial Worker: revocation immediately blocks queued and leased traffi
       ).status,
       403,
     );
+    // Disabling is reversible: re-enabling restores the peer's existing access.
+    assert.deepEqual((await f.control({ enablePeer: "beta" })).disabled, []);
+    assert.equal((await f.api("beta", "/inbox")).status, 200);
+    assert.equal((await f.api("alpha", path(row.id))).status, 200);
   });
 });
 
@@ -390,13 +395,19 @@ test("adversarial Worker: malformed, oversized and hostile input is bounded iner
   });
 });
 
-test("adversarial Worker: invalid auth configuration fails closed on the actual boundary", async () => {
-  const auth = authTokens();
-  auth.push({ ...auth[0], peer: "beta" });
-  await using({ auth }, async (f) => {
-    const r = await f.api("alpha", "/inbox");
-    assert.equal(r.status, 503);
-    assert.deepEqual(r.body, { error: "configuration_unavailable" });
+test("adversarial Worker: only a live connection token for this group reaches its mailbox", async () => {
+  await using({}, async (f) => {
+    for (const credential of [
+      "wrong",
+      `ttm_${"x".repeat(43)}`,
+      `${tokens.alpha}x`,
+      tokens.alpha.slice(4),
+    ])
+      assert.equal((await f.api(credential, "/inbox")).status, 401, credential);
+    // The "other" group's token cannot read the demo group, and alpha's cannot read "other".
+    assert.equal((await f.api("other", "/inbox")).status, 404);
+    assert.equal((await f.api("alpha", "/inbox", "GET", undefined, "other")).status, 404);
+    assert.equal((await f.api("other", "/inbox", "GET", undefined, "other")).status, 200);
   });
 });
 
@@ -404,7 +415,7 @@ test("adversarial Worker: pause blocks all data operations but allows owned canc
   await using({}, async (f) => {
     const row = await send(f);
     const lease = await claim(f);
-    assert.equal((await f.api("admin", "/control", "POST", { paused: true })).status, 200);
+    assert.equal((await f.control({ paused: true })).paused, true);
     for (const [peer, endpoint, method, body] of [
       ["alpha", path(row.id), "GET"],
       ["alpha", "/outbox", "GET"],
@@ -421,7 +432,7 @@ test("adversarial Worker: pause blocks all data operations but allows owned canc
     ])
       assert.equal((await f.api(peer, endpoint, method, body)).status, 503);
     assert.equal((await f.api("alpha", `${path(row.id)}/cancel`, "POST", {})).status, 200);
-    assert.equal((await f.api("admin", "/control", "POST", { paused: false })).status, 200);
+    assert.equal((await f.control({ paused: false })).paused, false);
     assert.equal((await f.api("alpha", path(row.id))).body.state, "cancelled");
   });
 });
@@ -504,14 +515,15 @@ test("adversarial Worker: UTF-8 byte bounds and expired token are enforced on ac
       400,
     );
   });
-  const auth = authTokens();
-  auth.find((t) => t.peer === "beta").notAfter = Date.now() - 1;
-  await using({ auth }, async (f) => {
+  await using({}, async (f) => {
     await send(f);
-    assert.equal((await f.api("beta", "/inbox")).status, 401);
+    const expired = `ttm_${"e".repeat(43)}`;
+    await f.connect("beta", expired, -1);
+    assert.equal((await f.api(expired, "/inbox")).status, 401);
     assert.equal(
-      (await f.api("beta", "/claim", "POST", { claimKey: "expired-token" })).status,
+      (await f.api(expired, "/claim", "POST", { claimKey: "expired-token" })).status,
       401,
     );
+    assert.equal((await f.api("beta", "/inbox")).status, 200);
   });
 });

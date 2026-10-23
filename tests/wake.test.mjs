@@ -92,7 +92,7 @@ for (const mode of ["redirect", "server-error", "network-error"])
   });
 
 test("cancel and revocation before wake dispatch suppress all external calls", async () => {
-  for (const action of ["cancel", "revoke"]) {
+  for (const action of ["cancel", "disable"]) {
     let calls = 0;
     const f = await fixture(
       wakeOptions(() => {
@@ -103,7 +103,7 @@ test("cancel and revocation before wake dispatch suppress all external calls", a
     try {
       const request = await send(f);
       if (action === "cancel") await f.api("alpha", `/requests/${request.id}/cancel`, "POST", {});
-      else await f.api("admin", "/control", "POST", { revokePeer: "beta" });
+      else await f.control({ disablePeer: "beta" });
       await sleep(1300);
       assert.equal(calls, 0);
     } finally {

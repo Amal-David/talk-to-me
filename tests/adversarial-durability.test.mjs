@@ -16,8 +16,13 @@ try {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function databaseFile(dir) {
   const files = await readdir(dir, { recursive: true });
-  const file = files.find((name) => name.endsWith(".sqlite") && !name.endsWith("metadata.sqlite"));
-  assert.ok(file, "Expected a persisted Durable Object database");
+  const file = files.find(
+    (name) =>
+      name.includes("GroupMailbox") &&
+      name.endsWith(".sqlite") &&
+      !name.endsWith("metadata.sqlite"),
+  );
+  assert.ok(file, "Expected a persisted group mailbox database");
   return join(dir, file);
 }
 function read(file, sql, ...args) {

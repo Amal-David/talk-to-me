@@ -1,5 +1,5 @@
-import { CONNECTION_DAYS, identityKey, LABEL_MAX } from "./config";
-import type { ConnectionSummary, CredentialRow, Identity } from "./types";
+import { CONNECTION_DAYS, groupChange, identityKey, LABEL_MAX, restoresAccess } from "./config";
+import type { ConnectionSummary, CredentialRow, GroupStatus, Identity } from "./types";
 
 const escapeHtml = (value: unknown) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -84,7 +84,22 @@ export function homePage(
   credentials: Pick<CredentialRow, "id" | "created_at" | "last_used_at">[],
   connections: ConnectionSummary[],
   identities: Identity[],
+  groups: GroupStatus[],
 ): Response {
+  // The server's own rule decides which buttons ask for a passkey first.
+  const button = (action: string, group: string, peer?: string) =>
+    `<button data-action="${action}" data-group="${escapeHtml(group)}"${peer === undefined ? "" : ` data-peer="${escapeHtml(peer)}"`}${restoresAccess(groupChange(action, peer)) ? " data-restore" : ""}>${action[0]?.toUpperCase()}${action.slice(1)}</button>`;
+  const groupRows = groups
+    .map(
+      (g) =>
+        `<h3>${escapeHtml(g.name)}: ${g.paused ? "paused" : "running"} ${button(g.paused ? "resume" : "pause", g.name)}</h3><ul>${g.peers
+          .map((peer) => {
+            const off = g.disabled.includes(peer);
+            return `<li>${escapeHtml(peer)}: ${off ? "disabled" : "active"} ${button(off ? "enable" : "disable", g.name, peer)}</li>`;
+          })
+          .join("")}</ul>`,
+    )
+    .join("");
   const passkeys = credentials
     .map(
       (c) =>
@@ -99,7 +114,9 @@ export function homePage(
     .join("");
   return page(
     "Relay owner",
-    `<h2>Connections</h2><ul>${live || "<li>None</li>"}</ul>
+    `<h2>Groups</h2>${groupRows}
+<p>Pausing a group or disabling a peer takes effect on the next call. Resuming or enabling asks for your passkey.</p>
+<h2>Connections</h2><ul>${live || "<li>None</li>"}</ul>
 <h3>New connection token</h3>
 <p>For hosts that take a header instead of signing in. Shown once.</p>
 ${identityChoices(identities)}
@@ -110,7 +127,13 @@ ${identityChoices(identities)}
 <p><button id="add">Add passkey</button> <button id="out">Sign out</button></p>`,
     `${CHOICES_SCRIPT}
 document.addEventListener('click', (e) => {
-  const id = e.target.dataset && e.target.dataset.revoke;
+  const d = e.target.dataset || {};
+  if (d.action) (async () => {
+    const assertion = 'restore' in d ? await get(await post('/owner/groups/step-up', {})) : undefined;
+    await post('/owner/groups/control', { group: d.group, action: d.action, peer: d.peer, assertion });
+    location.reload();
+  })().catch((err) => show('Failed: ' + err.message));
+  const id = d.revoke;
   if (id) post('/owner/connections/revoke', { id }).then(() => location.reload(), (err) => show('Failed: ' + err.message));
 });
 run('mint', async () => {

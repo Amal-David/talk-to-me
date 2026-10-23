@@ -1,5 +1,6 @@
-import { authenticate, config, redirectAllowlist, relayOrigin } from "./config";
+import { config, redirectAllowlist, relayOrigin } from "./config";
 import { oauthProvider, owner } from "./oauth";
+import { CONNECTION_TOKEN } from "./owner";
 import type { Env } from "./types";
 import { errorResponse, fail, response } from "./validation";
 
@@ -18,8 +19,17 @@ async function relayRoutes(request: Request, env: Env): Promise<Response> {
     const match = /^\/v1\/groups\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})\//.exec(url.pathname);
     if (!match || url.search) fail(404, "not_found");
     const name = match[1] as string;
-    await authenticate(request, cfg, name);
-    return env.GROUPS.get(env.GROUPS.idFromName(name)).fetch(request);
+    if (!cfg.groups[name]) fail(401, "unauthorized");
+    // Only connection tokens minted on the owner pages reach a mailbox.
+    const token = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "";
+    const connection = CONNECTION_TOKEN.test(token)
+      ? await owner(env).tokenConnection(token)
+      : null;
+    if (!connection) return fail(401, "unauthorized");
+    // A token for one group never reaches another group's mailbox.
+    if (connection.group !== name) fail(404, "not_found");
+    const principal = { group: name, peer: connection.peer };
+    return env.GROUPS.get(env.GROUPS.idFromName(name)).handle(request, principal);
   } catch (error) {
     return errorResponse(error);
   }

@@ -85,6 +85,9 @@ async function connect(f, key, clientId, identity = "demo/alpha") {
   assert.equal(tokens.status, 200, JSON.stringify(tokens.body));
   return tokens.body;
 }
+// Live connections listed on the owner page, including the fixture's seeded peer tokens.
+const connectionRows = async (f, cookie) =>
+  (await f.owner("/owner", undefined, { cookie })).body.match(/data-revoke=/g)?.length ?? 0;
 const whoami = (f, token) => call(f, "/mcp", { headers: { Authorization: `Bearer ${token}` } });
 
 test("a host connects with one passkey approval and acts as the chosen peer", async () => {
@@ -180,12 +183,12 @@ test("reconnecting the same host as the same peer replaces the earlier connectio
     const { key, cookie } = await setUp(f);
     const clientId = (await register(f)).body.client_id;
     const first = await connect(f, key, clientId);
+    const afterFirst = await connectionRows(f, cookie);
     const second = await connect(f, key, clientId);
     assert.equal((await whoami(f, first.access_token)).status, 401);
     assert.equal((await whoami(f, second.access_token)).status, 200);
     // The Connections page lists only the live connection, not the replaced one.
-    const home = await f.owner("/owner", undefined, { cookie });
-    assert.equal(home.body.match(/data-revoke=/g)?.length, 1);
+    assert.equal(await connectionRows(f, cookie), afterFirst);
   } finally {
     await f.close();
   }
@@ -228,6 +231,7 @@ test("denying a consent returns the host an access_denied error and creates no c
     const { cookie } = await setUp(f);
     const clientId = (await register(f)).body.client_id;
     const consent = await beginConsent(f, clientId);
+    const before = await connectionRows(f, cookie);
     const denied = await call(
       f,
       "/authorize",
@@ -238,8 +242,7 @@ test("denying a consent returns the host an access_denied error and creates no c
     assert.equal(`${redirect.origin}${redirect.pathname}`, REDIRECT);
     assert.equal(redirect.searchParams.get("error"), "access_denied");
     assert.equal(redirect.searchParams.get("code"), null);
-    const home = await f.owner("/owner", undefined, { cookie });
-    assert.equal(home.body.match(/data-revoke=/g), null);
+    assert.equal(await connectionRows(f, cookie), before);
   } finally {
     await f.close();
   }

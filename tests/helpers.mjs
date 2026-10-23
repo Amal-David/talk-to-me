@@ -1,19 +1,24 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { Miniflare } from "miniflare";
+
+const sha256hex = (value) => createHash("sha256").update(value).digest("hex");
+// Synthetic connection tokens in the relay's ttm_ + 43 base64url character format.
+const syntheticToken = (name) =>
+  `ttm_${createHash("sha256").update(`synthetic-${name}`).digest("base64url")}`;
 export const tokens = Object.freeze({
-  alpha: "synthetic-alpha-test-token-not-for-production-0001",
-  beta: "synthetic-beta-test-token-not-for-production-00002",
-  gamma: "synthetic-gamma-test-token-not-for-production-0003",
-  admin: "synthetic-admin-test-token-not-for-production-0004",
-  other: "synthetic-other-test-token-not-for-production-0005",
+  alpha: syntheticToken("alpha"),
+  beta: syntheticToken("beta"),
+  gamma: syntheticToken("gamma"),
+  other: syntheticToken("other"),
 });
+const groupOf = (peer) => (peer === "other" ? "other" : "demo");
 export function policy(limits = {}) {
   return {
     version: 1,
     groups: {
       demo: {
-        peers: ["alpha", "beta", "gamma", "admin"],
+        peers: ["alpha", "beta", "gamma"],
         routes: [
           { from: "alpha", to: "beta", topics: ["general"], reply: true },
           { from: "beta", to: "alpha", topics: ["general"], reply: true },
@@ -24,24 +29,12 @@ export function policy(limits = {}) {
     },
   };
 }
-export function authTokens() {
-  return Object.entries(tokens).map(([peer, token]) => ({
-    sha256: createHash("sha256").update(token).digest("hex"),
-    group: peer === "other" ? "other" : "demo",
-    peer,
-    role: peer === "admin" ? "admin" : "peer",
-  }));
-}
 export async function fixture(options = {}) {
   const bindings = {
     POLICY_JSON:
       typeof options.policy === "string"
         ? options.policy
         : JSON.stringify(options.policy ?? policy(options.limits)),
-    AUTH_TOKENS_JSON:
-      typeof options.auth === "string"
-        ? options.auth
-        : JSON.stringify(options.auth ?? authTokens()),
     ...options.bindings,
   };
   const mf = new Miniflare({
@@ -62,6 +55,24 @@ export async function fixture(options = {}) {
         throw new Error("Unexpected external request");
       }),
   });
+  const ownerNamespace = await mf.getDurableObjectNamespace("OWNER");
+  const ownerStub = ownerNamespace.get(ownerNamespace.idFromName("owner"));
+  // Gives a peer a connection token the way the owner pages would, minus the passkey ceremony.
+  const connect = async (peer, token, days = 30) =>
+    ownerStub.createConnection({
+      group: groupOf(peer),
+      peer,
+      days,
+      label: `synthetic ${peer}`,
+      credential: { kind: "token", tokenHash: sha256hex(token) },
+    });
+  // A restarted fixture on persisted storage already holds these connections.
+  for (const [peer, token] of Object.entries(tokens))
+    if (!(await ownerStub.tokenConnection(token))) await connect(peer, token);
+  const groupsNamespace = await mf.getDurableObjectNamespace("GROUPS");
+  // Owner-only group controls, called the way the Owner object calls them.
+  const control = (change, group = "demo") =>
+    groupsNamespace.get(groupsNamespace.idFromName(group)).control(group, change);
   const api = async (peer, path, method = "GET", body, group = "demo") => {
     const result = await mf.dispatchFetch(`https://relay.example/v1/groups/${group}${path}`, {
       method,
@@ -73,7 +84,7 @@ export async function fixture(options = {}) {
     });
     return { status: result.status, body: await result.json() };
   };
-  return { mf, api, close: () => mf.dispose() };
+  return { mf, api, connect, control, close: () => mf.dispose() };
 }
 export async function send(f, key = "request-one", extra = {}) {
   const res = await f.api("alpha", "/requests", "POST", {

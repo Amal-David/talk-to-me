@@ -1,13 +1,13 @@
+import type { GroupMailbox } from "./mailbox";
 import type { Owner } from "./owner";
 
 export interface Env {
-  GROUPS: DurableObjectNamespace;
+  GROUPS: DurableObjectNamespace<GroupMailbox>;
   OWNER: DurableObjectNamespace<Owner>;
   OWNER_SETUP_CODE?: string;
   OAUTH_KV: KVNamespace;
   OAUTH_REDIRECT_URIS?: string;
   POLICY_JSON?: string;
-  AUTH_TOKENS_JSON?: string;
   WAKE_ENDPOINTS_JSON?: string;
   RELAY_PUBLIC_URL?: string;
 }
@@ -35,16 +35,23 @@ export interface GroupPolicy {
   limits: Limits;
   wake: Record<string, { adapter: "grok"; endpointId: string }>;
 }
-export interface Token {
-  sha256: string;
-  group: string;
-  peer: string;
-  role: "peer" | "admin";
-  notAfter?: number;
+// The authenticated caller of a group's mailbox, resolved by the Worker from a connection.
+export type Principal = Pick<ConnectionProps, "group" | "peer">;
+export interface GroupControl {
+  paused?: boolean;
+  disablePeer?: string;
+  enablePeer?: string;
+}
+export interface GroupState {
+  paused: boolean;
+  disabled: string[];
+}
+export interface GroupStatus extends GroupState {
+  name: string;
+  peers: string[];
 }
 export interface Config {
   groups: Record<string, GroupPolicy>;
-  tokens: Token[];
 }
 export interface WakeEndpoint {
   group: string;

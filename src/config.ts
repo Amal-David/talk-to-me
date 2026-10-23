@@ -1,5 +1,13 @@
-import type { Config, Env, GroupPolicy, Identity, Limits, Token, WakeEndpoint } from "./types";
-import { digest, fail, fields, identifier, integer, object } from "./validation";
+import type {
+  Config,
+  Env,
+  GroupControl,
+  GroupPolicy,
+  Identity,
+  Limits,
+  WakeEndpoint,
+} from "./types";
+import { fail, fields, identifier, integer, object } from "./validation";
 
 export const DEFAULT_LIMITS: Limits = {
   leaseSeconds: 60,
@@ -77,45 +85,15 @@ export function config(env: Env): Config {
     const entries = Object.entries(object(policy.groups));
     if (entries.length > 100) fail(400, "too_many_groups");
     for (const [name, value] of entries) groups[identifier(name)] = group(value);
-    const seen = new Set<string>();
-    const tokens: Token[] = list(JSON.parse(env.AUTH_TOKENS_JSON ?? ""), 1000).map((input) => {
-      const item = object(input);
-      fields(item, ["sha256", "group", "peer", "role", "notAfter"]);
-      const name = identifier(item.group);
-      const peer = identifier(item.peer);
-      if (
-        typeof item.sha256 !== "string" ||
-        !/^[a-f0-9]{64}$/.test(item.sha256) ||
-        seen.has(item.sha256)
-      )
-        fail(400, "invalid_token_binding");
-      seen.add(item.sha256);
-      if (!groups[name]?.peers.includes(peer) || (item.role !== "peer" && item.role !== "admin"))
-        fail(400, "invalid_token_scope");
-      const token: Token = { sha256: item.sha256, group: name, peer, role: item.role };
-      if (item.notAfter !== undefined)
-        token.notAfter = integer(item.notAfter, 1, Number.MAX_SAFE_INTEGER);
-      return token;
-    });
-    if (!tokens.length || !entries.length) fail(400, "empty_config");
+    if (!entries.length) fail(400, "empty_config");
     // A configured wake route is invalid unless its separately provisioned endpoint is valid.
     for (const [name, policy] of Object.entries(groups))
       for (const [peer, wake] of Object.entries(policy.wake))
         wakeEndpoint(env, wake.endpointId, name, peer);
-    return { groups, tokens };
+    return { groups };
   } catch {
     return fail(503, "configuration_unavailable");
   }
-}
-export async function authenticate(request: Request, cfg: Config, name: string): Promise<Token> {
-  const header = request.headers.get("authorization");
-  if (!header || !/^Bearer [A-Za-z0-9._~+/-]{32,256}={0,2}$/.test(header))
-    fail(401, "unauthorized");
-  const hash = await digest(header.slice(7));
-  const token = cfg.tokens.find((t) => t.sha256 === hash && t.group === name);
-  if (!token || (token.notAfter !== undefined && Date.now() >= token.notAfter))
-    fail(401, "unauthorized");
-  return token;
 }
 export function routeAllowed(
   policy: GroupPolicy,
@@ -186,6 +164,25 @@ export function connectionDays(value: unknown): number {
   if (!CONNECTION_DAYS.includes(value as number)) fail(400, "invalid_expiry");
   return value as number;
 }
+// A peer is given for exactly the peer actions; anything else is a malformed request.
+export function groupChange(action: unknown, peer: string | undefined): GroupControl {
+  switch (action) {
+    case "pause":
+    case "resume":
+      if (peer === undefined) return { paused: action === "pause" };
+      break;
+    case "disable":
+      if (peer !== undefined) return { disablePeer: peer };
+      break;
+    case "enable":
+      if (peer !== undefined) return { enablePeer: peer };
+      break;
+  }
+  return fail(400, "invalid_action");
+}
+export const restoresAccess = (change: GroupControl) =>
+  change.paused === false || change.enablePeer !== undefined;
+
 // Exact redirect URIs an OAuth client may register or use; anything else is refused.
 export function redirectAllowlist(env: Env): string[] {
   try {
