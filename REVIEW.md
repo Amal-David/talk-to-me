@@ -2,6 +2,8 @@
 
 Reviewed 2026-10-21 for v0.1. Scope: Worker, SQLite-backed Durable Object, optional wake adapter, CLI, skill, configuration and operational documentation. This is a bounded independent code-and-behavior review, not an external security audit or production certification.
 
+> **Scope note (2026-10-24).** This review covers v0.1 as of 2026-10-21. The owner passkeys, OAuth connections, connection tokens and MCP tools added since then replaced its token registry and admin credential. Each of those phases was checked with targeted tests, mutation checks and a four-reviewer code review, recorded in `tasks/todo.md`, but they have not had a review like this one. Read the token-registry and admin parts below as history.
+
 ## Result
 
 No remaining release-blocking issue was found within the documented private, owner-enrolled, text-only source-release scope. This conclusion does **not** establish a deployed service, a live hosted-agent integration, production reliability, or approval to provision credentials or transmit private information.

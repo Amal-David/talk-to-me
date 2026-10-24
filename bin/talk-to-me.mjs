@@ -12,7 +12,7 @@ const HELP = `talk-to-me: private text request/reply relay (Node.js 22.13+)
 Environment (required; credentials never belong in arguments):
   TALK_TO_ME_URL       Relay origin, HTTPS; HTTP only for localhost/loopback
   TALK_TO_ME_GROUP     Configured private group
-  TALK_TO_ME_TOKEN     This peer's bearer credential, supplied securely
+  TALK_TO_ME_TOKEN     This peer's ttm_ connection token from the relay's owner page
 
 Commands:
   send --to PEER --topic TOPIC --text TEXT --idempotency-key KEY

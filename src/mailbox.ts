@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import { authenticate, config, routeAllowed, wakeEndpoint } from "./config";
-import type { Env, GroupPolicy, RequestRow, Token } from "./types";
+import { config, routeAllowed, wakeEndpoint } from "./config";
+import type { Env, GroupControl, GroupPolicy, GroupState, Principal, RequestRow } from "./types";
 import {
   bodyJson,
   digest,
@@ -34,7 +34,7 @@ export class GroupMailbox extends DurableObject<Env> {
     this.sql = ctx.storage.sql;
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS revoked (peer TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS disabled_peers (peer TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS requests (
         id TEXT PRIMARY KEY, sender TEXT NOT NULL, recipient TEXT NOT NULL, topic TEXT NOT NULL,
         text TEXT, request_key TEXT NOT NULL, fingerprint TEXT NOT NULL, state TEXT NOT NULL,
@@ -54,6 +54,16 @@ export class GroupMailbox extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS rates (peer TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT, kind TEXT NOT NULL, at INTEGER NOT NULL);
     `);
+    // v0.1 (published on main) kept disabled peers in `revoked`. Carry them over once, so an
+    // upgraded mailbox never re-enables a peer without the owner's passkey.
+    if (
+      this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='revoked'").toArray()
+        .length
+    )
+      ctx.storage.transactionSync(() => {
+        this.sql.exec("INSERT OR IGNORE INTO disabled_peers(peer) SELECT peer FROM revoked");
+        this.sql.exec("DROP TABLE revoked");
+      });
   }
   private first<T extends Record<string, SqlStorageValue>>(
     query: string,
@@ -69,7 +79,8 @@ export class GroupMailbox extends DurableObject<Env> {
   }
   private active(policy: GroupPolicy, peer: string): boolean {
     return (
-      policy.peers.includes(peer) && !this.first("SELECT peer FROM revoked WHERE peer=?", peer)
+      policy.peers.includes(peer) &&
+      !this.first("SELECT peer FROM disabled_peers WHERE peer=?", peer)
     );
   }
   private permitted(policy: GroupPolicy, row: RequestRow, reply = false): boolean {
@@ -112,9 +123,9 @@ export class GroupMailbox extends DurableObject<Env> {
       wake: wake ? { state: wake.state, statusCode: wake.status_code } : { state: "disabled" },
     };
   }
-  private readAllowed(policy: GroupPolicy, token: Token, row: RequestRow): void {
+  private readAllowed(policy: GroupPolicy, principal: Principal, row: RequestRow): void {
     if (
-      ![row.sender, row.recipient].includes(token.peer) ||
+      ![row.sender, row.recipient].includes(principal.peer) ||
       !this.permitted(policy, row, row.result_key !== null)
     )
       fail(404, "not_found");
@@ -129,17 +140,17 @@ export class GroupMailbox extends DurableObject<Env> {
     )
       fail(409, "lease_not_current");
   }
-  private rate(token: Token, policy: GroupPolicy, now: number): void {
+  private rate(principal: Principal, policy: GroupPolicy, now: number): void {
     const window = Math.floor(now / 60000);
     const previous = this.first<{ window: number; count: number }>(
       "SELECT window,count FROM rates WHERE peer=?",
-      token.peer,
+      principal.peer,
     );
     const count = previous?.window === window ? previous.count + 1 : 1;
     if (count > policy.limits.ratePerMinute) fail(429, "rate_limit");
     this.sql.exec(
       "INSERT INTO rates(peer,window,count) VALUES(?,?,?) ON CONFLICT(peer) DO UPDATE SET window=excluded.window,count=excluded.count",
-      token.peer,
+      principal.peer,
       window,
       count,
     );
@@ -194,18 +205,17 @@ export class GroupMailbox extends DurableObject<Env> {
     });
   }
 
-  async fetch(request: Request): Promise<Response> {
+  // RPC only: the Worker authenticates the caller and passes the principal; there is no
+  // fetch handler, so nothing on the internet can reach this object directly.
+  async handle(request: Request, principal: Principal): Promise<Response> {
     try {
       const url = new URL(request.url);
       const match = /^\/v1\/groups\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})(\/.*)$/.exec(url.pathname);
-      if (!match || url.search) fail(404, "not_found");
-      const name = match[1] as string;
+      if (!match || url.search || match[1] !== principal.group) fail(404, "not_found");
+      this.assertBound(principal.group);
+      const name = principal.group;
       const path = match[2] as string;
-      if (this.ctx.id.toString() !== this.env.GROUPS.idFromName(name).toString())
-        fail(404, "not_found");
-      const cfg = config(this.env);
-      const policy = cfg.groups[name] ?? fail(401, "unauthorized");
-      const token = await authenticate(request, cfg, name);
+      const policy = config(this.env).groups[name] ?? fail(401, "unauthorized");
       const body = request.method === "POST" ? await bodyJson(request) : {};
       // Hash before the transaction; all authority/state is checked again inside it.
       let fingerprint: string | undefined;
@@ -231,27 +241,24 @@ export class GroupMailbox extends DurableObject<Env> {
       }
       const output = this.ctx.storage.transactionSync(() => {
         const now = Date.now();
-        if (token.notAfter !== undefined && now >= token.notAfter) fail(401, "unauthorized");
-        if (!this.active(policy, token.peer)) fail(403, "revoked");
+        if (!this.active(policy, principal.peer)) fail(403, "peer_disabled");
         const storedName = this.setting("group");
         if (storedName && storedName !== name) fail(404, "not_found");
         this.sql.exec("INSERT OR IGNORE INTO settings(key,value) VALUES('group',?)", name);
         this.sweep(policy, now);
         const isCancel = /^\/requests\/[^/]+\/cancel$/.test(path);
-        if (this.paused() && path !== "/control" && !isCancel) fail(503, "group_paused");
-        this.rate(token, policy, now);
-        if (request.method === "POST" && path === "/control")
-          return this.control(body, token, policy, now);
+        if (this.paused() && !isCancel) fail(503, "group_paused");
+        this.rate(principal, policy, now);
         if (request.method === "POST" && path === "/requests")
-          return this.enqueue(body, token, policy, fingerprint as string, now);
+          return this.enqueue(body, principal, policy, fingerprint as string, now);
         if (request.method === "POST" && path === "/claim")
-          return this.claim(body, token, policy, now);
+          return this.claim(body, principal, policy, now);
         if (request.method === "GET" && (path === "/inbox" || path === "/outbox")) {
           const column = path === "/inbox" ? "recipient" : "sender";
           const rows = this.sql
             .exec<RequestRow>(
               `SELECT * FROM requests WHERE ${column}=? ORDER BY created_at DESC,id DESC LIMIT 100`,
-              token.peer,
+              principal.peer,
             )
             .toArray();
           return {
@@ -265,12 +272,12 @@ export class GroupMailbox extends DurableObject<Env> {
           /^\/requests\/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})(?:\/(ack|result|cancel))?$/.exec(path);
         if (!item) fail(404, "not_found");
         const row = this.get(item[1] as string);
-        this.readAllowed(policy, token, row);
+        this.readAllowed(policy, principal, row);
         if (request.method === "GET" && !item[2]) return this.view(row);
         if (request.method !== "POST") fail(405, "method_not_allowed");
         if (item[2] === "cancel") {
           fields(body, []);
-          if (token.peer !== row.sender && token.role !== "admin") fail(403, "forbidden");
+          if (principal.peer !== row.sender) fail(403, "forbidden");
           if (row.state === "cancelled") return this.view(row);
           if (!["pending", "leased"].includes(row.state)) fail(409, "already_terminal");
           this.sql.exec(
@@ -289,7 +296,7 @@ export class GroupMailbox extends DurableObject<Env> {
         const lease = identifier(body.leaseToken);
         if (item[2] === "ack") {
           fields(body, ["leaseToken"]);
-          this.liveLease(row, token.peer, lease, now);
+          this.liveLease(row, principal.peer, lease, now);
           if (row.ack_at === null) {
             this.sql.exec("UPDATE requests SET ack_at=? WHERE id=?", now, row.id);
             this.event(row.id, "acknowledged", now);
@@ -298,13 +305,13 @@ export class GroupMailbox extends DurableObject<Env> {
         }
         if (item[2] === "result") {
           if (!this.permitted(policy, row, true)) fail(403, "reply_forbidden");
-          if (token.peer !== row.recipient) fail(403, "forbidden");
+          if (principal.peer !== row.recipient) fail(403, "forbidden");
           if (row.state === "completed") {
             if (row.result_lease !== lease || row.result_fingerprint !== fingerprint)
               fail(409, "result_conflict");
             return this.view(row);
           }
-          this.liveLease(row, token.peer, lease, now);
+          this.liveLease(row, principal.peer, lease, now);
           this.sql.exec(
             "UPDATE requests SET state='completed',result_text=?,result_key=?,result_fingerprint=?,result_lease=?,terminal_at=?,purge_at=?,ack_at=COALESCE(ack_at,?),lease_token=NULL,lease_until=NULL WHERE id=?",
             body.text as string,
@@ -327,48 +334,53 @@ export class GroupMailbox extends DurableObject<Env> {
       return errorResponse(error);
     }
   }
-  private control(
-    body: Record<string, unknown>,
-    token: Token,
-    policy: GroupPolicy,
-    now: number,
-  ): object {
-    fields(body, ["paused", "revokePeer"]);
-    if (token.role !== "admin") fail(403, "forbidden");
-    if (body.paused === undefined && body.revokePeer === undefined) fail(400, "empty_control");
-    if (body.paused !== undefined) {
-      if (typeof body.paused !== "boolean") fail(400, "invalid_pause");
+  // Called only by the Owner object after it has checked the owner's session.
+  control(group: string, change: GroupControl): GroupState {
+    this.assertBound(group);
+    this.ctx.storage.transactionSync(() => {
+      if (change.paused !== undefined)
+        this.sql.exec(
+          "INSERT INTO settings(key,value) VALUES('paused',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+          String(change.paused),
+        );
+      if (change.disablePeer !== undefined) {
+        this.sql.exec("INSERT OR IGNORE INTO disabled_peers(peer) VALUES(?)", change.disablePeer);
+        // Suppressed wakes stay suppressed; re-enabling the peer does not re-send them.
+        this.sql.exec(
+          "UPDATE wakes SET state='suppressed' WHERE state='pending' AND request_id IN (SELECT id FROM requests WHERE sender=? OR recipient=?)",
+          change.disablePeer,
+          change.disablePeer,
+        );
+      }
+      if (change.enablePeer !== undefined)
+        this.sql.exec("DELETE FROM disabled_peers WHERE peer=?", change.enablePeer);
+      this.event(null, "control_changed", Date.now());
+      // Control events are capped independently so repeated toggling cannot fill storage.
       this.sql.exec(
-        "INSERT INTO settings(key,value) VALUES('paused',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        String(body.paused),
+        "DELETE FROM events WHERE request_id IS NULL AND seq NOT IN (SELECT seq FROM events WHERE request_id IS NULL ORDER BY seq DESC LIMIT 1000)",
       );
-    }
-    if (body.revokePeer !== undefined) {
-      const peer = identifier(body.revokePeer);
-      if (!policy.peers.includes(peer)) fail(400, "unknown_peer");
-      this.sql.exec("INSERT OR IGNORE INTO revoked(peer) VALUES(?)", peer);
-      this.sql.exec(
-        "UPDATE wakes SET state='suppressed' WHERE state='pending' AND request_id IN (SELECT id FROM requests WHERE sender=? OR recipient=?)",
-        peer,
-        peer,
-      );
-    }
-    this.event(null, "control_changed", now);
-    // Control events are capped independently so a trusted admin cannot fill storage indefinitely.
-    this.sql.exec(
-      "DELETE FROM events WHERE request_id IS NULL AND seq NOT IN (SELECT seq FROM events WHERE request_id IS NULL ORDER BY seq DESC LIMIT 1000)",
-    );
+    });
+    return this.status(group);
+  }
+  // Read-only, for the owner page; it never writes or creates group state.
+  status(group: string): GroupState {
+    this.assertBound(group);
     return {
       paused: this.paused(),
-      revoked: this.sql
-        .exec<{ peer: string }>("SELECT peer FROM revoked ORDER BY peer")
+      disabled: this.sql
+        .exec<{ peer: string }>("SELECT peer FROM disabled_peers ORDER BY peer")
         .toArray()
         .map((r) => r.peer),
     };
   }
+  // This object serves exactly one group: the one its ID was derived from.
+  private assertBound(group: string): void {
+    if (this.ctx.id.toString() !== this.env.GROUPS.idFromName(group).toString())
+      fail(404, "not_found");
+  }
   private enqueue(
     body: Record<string, unknown>,
-    token: Token,
+    principal: Principal,
     policy: GroupPolicy,
     fingerprint: string,
     now: number,
@@ -376,16 +388,16 @@ export class GroupMailbox extends DurableObject<Env> {
     const to = body.to as string,
       topic = body.topic as string,
       key = body.idempotencyKey as string;
-    if (!this.active(policy, to) || !routeAllowed(policy, token.peer, to, topic))
+    if (!this.active(policy, to) || !routeAllowed(policy, principal.peer, to, topic))
       fail(403, "route_forbidden");
     const old = this.first<RequestRow>(
       "SELECT * FROM requests WHERE sender=? AND request_key=?",
-      token.peer,
+      principal.peer,
       key,
     );
     if (old) {
       if (old.fingerprint !== fingerprint) fail(409, "idempotency_conflict");
-      this.readAllowed(policy, token, old);
+      this.readAllowed(policy, principal, old);
       return this.view(old);
     }
     const all = this.first<{ n: number }>("SELECT COUNT(*) AS n FROM requests")?.n ?? 0;
@@ -399,9 +411,9 @@ export class GroupMailbox extends DurableObject<Env> {
     let parent: RequestRow | undefined;
     if (body.parentRequestId !== undefined) {
       parent = this.get(body.parentRequestId as string);
-      this.readAllowed(policy, token, parent);
+      this.readAllowed(policy, principal, parent);
       if (
-        parent.recipient !== token.peer ||
+        parent.recipient !== principal.peer ||
         !["pending", "leased", "completed"].includes(parent.state) ||
         parent.expires_at <= now
       )
@@ -416,7 +428,7 @@ export class GroupMailbox extends DurableObject<Env> {
     this.sql.exec(
       "INSERT INTO requests(id,sender,recipient,topic,text,request_key,fingerprint,state,created_at,expires_at,max_attempts,parent_id,hops) VALUES(?,?,?,?,?,?,?,'pending',?,?,?,?,?)",
       id,
-      token.peer,
+      principal.peer,
       to,
       topic,
       body.text as string,
@@ -435,7 +447,7 @@ export class GroupMailbox extends DurableObject<Env> {
   }
   private claim(
     body: Record<string, unknown>,
-    token: Token,
+    principal: Principal,
     policy: GroupPolicy,
     now: number,
   ): object | null {
@@ -443,14 +455,14 @@ export class GroupMailbox extends DurableObject<Env> {
     const key = identifier(body.claimKey);
     const old = this.first<ClaimRow>(
       "SELECT * FROM claims WHERE peer=? AND claim_key=?",
-      token.peer,
+      principal.peer,
       key,
     );
     if (old) {
       if (!old.request_id) return null;
       const row = this.get(old.request_id);
       if (!this.permitted(policy, row)) fail(403, "route_forbidden");
-      this.liveLease(row, token.peer, old.lease_token as string, now);
+      this.liveLease(row, principal.peer, old.lease_token as string, now);
       return {
         request: this.view(row),
         leaseToken: old.lease_token,
@@ -465,12 +477,12 @@ export class GroupMailbox extends DurableObject<Env> {
     const candidates = this.sql
       .exec<RequestRow>(
         "SELECT * FROM requests WHERE recipient=? AND state='pending' ORDER BY created_at,id",
-        token.peer,
+        principal.peer,
       )
       .toArray();
     const row = candidates.find((r) => this.permitted(policy, r));
     if (!row) {
-      this.sql.exec("INSERT INTO claims(peer,claim_key) VALUES(?,?)", token.peer, key);
+      this.sql.exec("INSERT INTO claims(peer,claim_key) VALUES(?,?)", principal.peer, key);
       return null;
     }
     const lease = crypto.randomUUID(),
@@ -483,7 +495,7 @@ export class GroupMailbox extends DurableObject<Env> {
     );
     this.sql.exec(
       "INSERT INTO claims(peer,claim_key,request_id,lease_token,lease_until) VALUES(?,?,?,?,?)",
-      token.peer,
+      principal.peer,
       key,
       row.id,
       lease,

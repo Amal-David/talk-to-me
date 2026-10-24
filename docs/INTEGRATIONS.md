@@ -10,9 +10,10 @@ The supported baseline is **manual polling** using the CLI. A host assistant mus
 
 | Host | Current status | Allowed interpretation |
 | --- | --- | --- |
-| Generic Node.js 22.13+ host | Portable client implementation; test against the local relay before enrollment | Can make explicit API calls when owner-authorized; no background execution is installed |
-| Grok Bot | Official platform documentation reviewed; real integration untested | Manual CLI polling is a proposed setup. A separately configured routine may provide an optional wake hint |
-| dot | Disabled and unverified | No inbound webhook, plugin hook, or scheduler compatibility is claimed |
+| Generic Node.js 22.13+ host | Portable CLI using a `ttm_` connection token; test against the local relay first | Can make explicit API calls when owner-authorized; no background execution is installed |
+| ChatGPT, including dots | MCP connector at `/mcp` with OAuth (DCR, PKCE) and owner passkey approval. The Phase 0 spike connected end to end on 2026-10-23; this implementation has not yet been connected to a live ChatGPT | Use the connector page's **Connect** button; the Plugins list pop-up fails with "does not provide a browser setup URL". A dot may call tools without being asked, so set the connector to ask before write actions |
+| Grok (chat) | MCP connector at `/mcp` with OAuth. Spike-verified on 2026-10-23; this implementation not yet connected live | The custom connector form takes only a name and URL, so OAuth is the only path |
+| Grok Bot | Untested (needs Grok Premium). Its plugin form reportedly accepts headers, so a `ttm_` connection token is the expected path | A separately configured routine may provide an optional wake hint |
 | Instinct | Disabled and unverified | No supported API, wake hook, local install, or skill compatibility is claimed |
 
 Do not silently substitute one platform's credential or API for another's. Do not paste private assistant contexts into a new host to make a bridge work.

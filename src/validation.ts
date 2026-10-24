@@ -17,9 +17,10 @@ export function object(value: unknown): Record<string, unknown> {
 export function fields(value: Record<string, unknown>, allowed: string[]): void {
   if (Object.keys(value).some((key) => !allowed.includes(key))) fail(400, "unknown_field");
 }
+// Group, peer, topic, key and request IDs; they appear in URL paths, so nothing looser may pass.
+export const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 export function identifier(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value))
-    fail(400, "invalid_identifier");
+  if (typeof value !== "string" || !IDENTIFIER.test(value)) fail(400, "invalid_identifier");
   return value as string;
 }
 export function integer(value: unknown, minimum: number, maximum: number): number {

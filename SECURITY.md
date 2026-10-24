@@ -4,19 +4,20 @@ Do not open a public issue containing secrets or private message contents. Repor
 
 ## Trusted boundaries
 
-- The owner controls deployment, policy, token provisioning, endpoint enrollment, Cloudflare bindings, and runtime code. These are privileged operations, not peer APIs.
-- Each private group maps to a separate SQLite Durable Object. The object authenticates the original bearer header again and verifies that its object ID matches the routed group. Caller-supplied identity headers are ignored; unknown body fields are rejected.
-- Tokens bind exactly one peer and group. A deployment may carry multiple hashes for a scoped rotation overlap, but one hash cannot ambiguously bind multiple identities. No sign-up or enrollment endpoint exists.
-- SHA-256 token hashes are for high-entropy bearer credentials only, not user passwords. Provision unique cryptographically random secrets out of band after explicit approval. This code does not generate or configure production credentials.
-- Expiring or removing a token hash prevents future authentication with that credential; it does not cancel previously accepted requests or queued wake signals while the peer and route remain active. Use durable peer revocation or group pause to stop queued dispatch, not key rotation alone.
+- The owner controls deployment, policy, Cloudflare bindings, and runtime code, and approves every connection. These are privileged operations, not peer APIs.
+- The owner signs in to `/owner` with a WebAuthn passkey (user verification required, bound to the `RELAY_PUBLIC_URL` origin). There is no password, emailed code or SMS fallback. The first passkey is registered with the one-time `OWNER_SETUP_CODE`.
+- Every connection binds exactly one group and peer, chosen by the owner when approving it. OAuth hosts (ChatGPT, Grok) get one after the owner approves the consent with a passkey; header-only clients (the CLI) get a `ttm_` connection token minted on the owner page after a fresh passkey assertion. The relay stores only the token's SHA-256 hash. No sign-up endpoint exists.
+- The Worker resolves the connection and passes the group and peer to the group's Durable Object over RPC. The object has no fetch handler, so it cannot be reached from the internet, and caller-supplied identity in headers or bodies is ignored.
+- Each private group maps to a separate SQLite Durable Object that verifies its object ID matches the group it is asked to serve. A token for one group never reaches another group's mailbox.
+- Revoking or expiring a connection blocks its next call. It does not cancel requests that connection already sent or wake signals already queued while the peer and route remain active; disable the peer or pause the group for that.
 
-A group administrator can pause/resume and revoke identities. Admin status does not confer blanket access to message bodies. Revocation is durable and cannot be undone through the HTTP API; key rotation does not undo a revoked peer.
+From the owner page, the owner can revoke connections, pause and resume groups, and disable and re-enable peers. Actions that only reduce access (revoke, pause, disable) need a signed-in session; actions that grant or restore access (approve, mint a token, add a passkey, resume, enable) also need a fresh passkey assertion. Owner controls do not give the owner a route to read message bodies.
 
 ## Guarantees and limits
 
 Every data operation rechecks current membership and exact route policy. Revoking either endpoint blocks access, claims, replies, and queued wake dispatch. A request's `reply: true` route flag permits a bounded canonical reply on that same correlation only, not arbitrary reverse-direction requests.
 
-Pause denies payload reads, enqueue, claim, ack, result, and future wake dispatch. Cancellation and admin control remain available. Cancellation of an active request prevents a later canonical result and any not-yet-started wake. It cannot retract already disclosed data or cancel a network request, bot run, or external effect already started. Polling clients should recheck status before separately authorized work.
+Pause denies payload reads, enqueue, claim, ack, result, and future wake dispatch. Cancellation and owner controls remain available. Cancellation of an active request prevents a later canonical result and any not-yet-started wake. It cannot retract already disclosed data or cancel a network request, bot run, or external effect already started. Polling clients should recheck status before separately authorized work.
 
 Lease nonces are fencing tokens, not identity credentials. Send, claim, and result receipts are durable; replay never renews a TTL or lease. Claim keys, including empty poll receipts, are single-use operation identities. One canonical result is enforced by a single-object synchronous SQLite transaction. Acknowledgement does not complete the request or extend its lease.
 

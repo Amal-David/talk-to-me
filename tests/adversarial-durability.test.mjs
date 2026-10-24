@@ -16,8 +16,13 @@ try {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function databaseFile(dir) {
   const files = await readdir(dir, { recursive: true });
-  const file = files.find((name) => name.endsWith(".sqlite") && !name.endsWith("metadata.sqlite"));
-  assert.ok(file, "Expected a persisted Durable Object database");
+  const file = files.find(
+    (name) =>
+      name.includes("GroupMailbox") &&
+      name.endsWith(".sqlite") &&
+      !name.endsWith("metadata.sqlite"),
+  );
+  assert.ok(file, "Expected a persisted group mailbox database");
   return join(dir, file);
 }
 function read(file, sql, ...args) {
@@ -261,6 +266,39 @@ test(
         recovery.close();
       }
       assert.equal((await f.api("beta", `/requests/${row.id}/result`, "POST", body)).status, 200);
+    } finally {
+      if (f) await f.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "adversarial durability: a v0.1 mailbox's revoked peers stay disabled after the upgrade",
+  sqlite,
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "talk-to-me-review-upgrade-"));
+    let f;
+    try {
+      f = await fixture({ persist: dir });
+      const row = await send(f, "before-upgrade");
+      const file = await databaseFile(dir);
+      await f.close();
+      f = undefined;
+      // Rewrite the stored schema to v0.1's: beta revoked in the old `revoked` table.
+      const db = new DatabaseSync(file);
+      try {
+        db.exec(
+          "DROP TABLE disabled_peers; CREATE TABLE revoked (peer TEXT PRIMARY KEY); INSERT INTO revoked VALUES ('beta');",
+        );
+      } finally {
+        db.close();
+      }
+      f = await fixture({ persist: dir });
+      assert.equal((await f.api("beta", "/inbox")).status, 403);
+      assert.equal((await f.api("alpha", `/requests/${row.id}`)).status, 404);
+      assert.deepEqual((await f.control({})).disabled, ["beta"]);
+      assert.equal(read(file, "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='revoked'").n, 0);
     } finally {
       if (f) await f.close();
       await rm(dir, { recursive: true, force: true });
