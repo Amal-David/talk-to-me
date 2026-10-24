@@ -54,6 +54,16 @@ export class GroupMailbox extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS rates (peer TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT, kind TEXT NOT NULL, at INTEGER NOT NULL);
     `);
+    // v0.1 (published on main) kept disabled peers in `revoked`. Carry them over once, so an
+    // upgraded mailbox never re-enables a peer without the owner's passkey.
+    if (
+      this.sql.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name='revoked'").toArray()
+        .length
+    )
+      ctx.storage.transactionSync(() => {
+        this.sql.exec("INSERT OR IGNORE INTO disabled_peers(peer) SELECT peer FROM revoked");
+        this.sql.exec("DROP TABLE revoked");
+      });
   }
   private first<T extends Record<string, SqlStorageValue>>(
     query: string,
