@@ -186,11 +186,45 @@ Each phase ends with `npm run check` and `npm run dry-run` passing and a commit.
 - [x] Tests (`tests/mcp.test.mjs`): tool listing and annotations on both protocol eras; a two-agent send → inbox → claim → reply → status round trip, including a retry that does not resend; refusals as tool errors; identity cannot be borrowed through extra arguments; crafted request IDs rejected. Annotations, caller identity and retry safety were mutation-checked. The OAuth tests now check identity through `who_am_i`.
 - Bundle grew to about 1.6 MB (322 KB gzipped), mostly zod and the MCP library.
 
-### Phase 5: docs, CI and real-host verification
+### Phase 5: deploy and real-host verification
 
-- [ ] Update README, API, OPERATIONS, INTEGRATIONS, SECURITY, REVIEW and the skill.
-- [ ] Pin GitHub Actions to commit SHAs; `npm ci --ignore-scripts` in CI.
-- [ ] With owner approval: deploy to the owner's custom domain, register two passkeys, connect a dot and Grok Bot, run a synthetic round trip, revoke, confirm denial.
+Nothing in this phase runs against Cloudflare, ChatGPT or Grok without the owner's go-ahead for that step.
+
+#### Decisions the owner makes first
+
+1. **Hostname.** A name on a zone already in the Cloudflare account, for example `relay.<your-domain>`. Passkeys are bound to it: moving later means registering new passkeys and reconnecting every host. Fallback: the account's `workers.dev` subdomain, with the same lock-in.
+2. **Workers plan.** The OAuth library writes to KV on every token refresh, and Phase 0 saw Grok refresh about five times in two minutes. Workers Free allows 1,000 KV writes a day, which active use can exhaust; Workers Paid ($5/month) allows 1,000,000. SQLite Durable Objects work on both.
+3. **Policy (`POLICY_JSON`).** Which agents exist and who may message whom on which topics. Proposed starting point: one group `personal` with peers `dots`, `grok` and `cli`, routes in both directions between every pair on topic `general`, replies allowed.
+4. **Deploy source.** Merge this branch to `main` through a reviewed PR and deploy from `main`, or deploy from the branch commit and merge after verification.
+
+#### Decided (2026-10-24)
+
+- **Hostname:** the account's `workers.dev` subdomain. Its exact address is printed by the first deploy, so the first deploy is followed by a second with `RELAY_PUBLIC_URL` set, before any passkey is registered. No zone permission is needed.
+- **Plan:** Workers Free. Two limits to watch: 1,000 KV writes a day (OAuth refreshes write to KV) and 10 ms of CPU per request (passkey verification, OAuth crypto and the 1.6 MB bundle may exceed it; it shows up as error 1102). Check both right after deploying; moving to Workers Paid is the fix for either.
+- **Policy:** group `personal`, peers `dots`, `grok`, `cli`; routes in both directions between every pair on topic `general`, replies allowed.
+- **Source:** push the branch, open a reviewed PR, merge to `main`, deploy from `main`.
+
+#### What the owner does (needs their accounts or devices)
+
+- Generate and store `OWNER_SETUP_CODE` without it passing through chat (commands below), then register two passkeys at `https://<host>/owner/setup` on different devices.
+- In ChatGPT: delete the spike connectors, add `https://<host>/mcp`, use the connector page's **Connect** button, approve as `dots`. In Grok: delete the spike connector, add the same URL, approve as `grok`.
+- Delete the spike passkey (for the old trycloudflare address) from the password manager.
+- Not available on `workers.dev`: a Cloudflare rate-limiting rule on `/owner/*` needs a zone. The relay's own limits still apply (5 setup-code guesses per 15 minutes, newest 1,000 challenges kept); moving to a custom domain later would allow the rule.
+- Optional: Grok Premium, to test Grok Bot with a `ttm_` token in its header field.
+
+#### What Claude does (each outward step confirmed first)
+
+1. [x] Before touching Cloudflare: pinned `actions/checkout` and `actions/setup-node` to the v4.4.0 commit SHAs; CI runs `npm ci --ignore-scripts` (a clean install that way passes all tests and the dry-run); added `.claude/` to `.gitignore`; updated README, REVIEW and the skill. Also fixed CI's audit gate: high-severity undici advisories published 2026-10-23 hit the repo's pinned `undici@7.29.1` (on `main` too); a repo-wide override now pins `undici@7.30.1` (published 2026-10-15, past the cooldown).
+2. Create the KV namespace `talk-to-me-oauth` and put its ID in `wrangler.jsonc`; turn on `workers_dev`; set the agreed `POLICY_JSON`; deploy once to learn the address, then set `RELAY_PUBLIC_URL` to it and redeploy; commit.
+3. `wrangler deploy`, then check from outside: `/health`, both metadata documents, `401` with the right `resource_metadata` on `/mcp`, and whether the deployed Worker can fetch ChatGPT's client document (decides if CIMD can be turned on).
+4. After the owner's passkeys and connections: a synthetic round trip `dots` → `grok` through the tools, a CLI round trip with a minted `ttm_` token, then revoke one connection and disable one peer and confirm both are refused on the next call.
+5. Record results here and update the integration status table.
+
+#### Things that are hard to undo
+
+- Passkeys and host connections are bound to the hostname.
+- Durable Object migrations `v1` and `v2` are applied on first deploy; deleting the Worker deletes all mailbox and owner data.
+- Message text is stored in plaintext in Cloudflare until seven days after a request finishes.
 
 ## Out of scope
 
