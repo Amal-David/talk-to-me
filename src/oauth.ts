@@ -18,7 +18,7 @@ import {
 import { mcpResponse } from "./mcp";
 import { approvalPage } from "./owner-pages";
 import type { ConnectionProps, Env } from "./types";
-import { bodyJson, errorResponse, fail, fields, response, textValue } from "./validation";
+import { bodyJson, digest, errorResponse, fail, fields, response, textValue } from "./validation";
 
 type OAuthEnv = Env & { OAUTH_PROVIDER: OAuthHelpers };
 export const owner = (env: Env) => env.OWNER.get(env.OWNER.idFromName("owner"));
@@ -89,13 +89,21 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
       .join(""),
     credential: { kind: "oauth", clientId: authRequest.clientId },
   });
-  const { redirectTo } = await oauth.completeAuthorization({
-    request: authRequest,
-    userId: identityKey(target),
-    metadata: {},
-    scope: authRequest.scope,
-    props,
-  });
+  let redirectTo: string;
+  try {
+    ({ redirectTo } = await oauth.completeAuthorization({
+      request: authRequest,
+      // The library forbids ":" in user IDs, which group and peer IDs may contain.
+      userId: await digest(identityKey(target)),
+      metadata: {},
+      scope: authRequest.scope,
+      props,
+    }));
+  } catch (error) {
+    // No grant was issued, so the connection must not stay live.
+    await relayOwner.revokeConnection(props.connectionId);
+    throw error;
+  }
   return withLibraryHeaders(response({ redirectTo }), approved.headers);
 }
 

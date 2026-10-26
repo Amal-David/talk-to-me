@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import test from "node:test";
+import { policy } from "./helpers.mjs";
 import { CHATGPT_REDIRECT, OWNER_ORIGIN, oauthFixture, setUp, tool } from "./owner-helpers.mjs";
 
 const REDIRECT = CHATGPT_REDIRECT;
@@ -261,6 +262,22 @@ test("denying a consent returns the host an access_denied error and creates no c
     assert.equal(redirect.searchParams.get("error"), "access_denied");
     assert.equal(redirect.searchParams.get("code"), null);
     assert.equal(await connectionRows(f, cookie), before);
+  } finally {
+    await f.close();
+  }
+});
+
+test("agents whose IDs contain a colon can be approved", async () => {
+  const p = policy();
+  p.groups.demo.peers.push("bot:one");
+  p.groups.demo.routes.push({ from: "bot:one", to: "alpha", topics: ["general"], reply: true });
+  const f = await oauthFixture({ policy: p });
+  try {
+    const { key, cookie } = await setUp(f);
+    const clientId = (await register(f, cookie)).body.client_id;
+    const tokens = await connect(f, key, clientId, "demo/bot:one");
+    const me = await whoami(f, tokens.access_token);
+    assert.deepEqual([me.status, me.data.peer], [200, "bot:one"]);
   } finally {
     await f.close();
   }

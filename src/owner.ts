@@ -268,6 +268,13 @@ export class Owner extends DurableObject<Env> {
   registrationOpen(): boolean {
     return Number(this.setting("registration_open_until") ?? 0) > Date.now();
   }
+  revokeConnection(id: string): void {
+    this.sql.exec(
+      "UPDATE connections SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+      Date.now(),
+      id,
+    );
+  }
   createConnection(grant: ConnectionGrant): ConnectionProps {
     const now = Date.now();
     const { credential } = grant;
@@ -491,11 +498,7 @@ export class Owner extends DurableObject<Env> {
       }
       if (pathname === "/owner/connections/revoke") {
         fields(body, ["id"]);
-        this.sql.exec(
-          "UPDATE connections SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
-          Date.now(),
-          identifier(body.id),
-        );
+        this.revokeConnection(identifier(body.id));
         return response({ ok: true });
       }
       if (pathname === "/owner/connections/token") {
