@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { configuration, run } from "../bin/talk-to-me.mjs";
 
-const TOKEN = "synthetic-review-token-not-a-real-secret-00001";
+const TOKEN = `ttm_${"synthetic-review-token-not-a-real-secret-001".slice(0, 43)}`;
 const ENV = {
   TALK_TO_ME_URL: "https://relay.example.com",
   TALK_TO_ME_GROUP: "review",
@@ -130,7 +130,7 @@ test("adversarial CLI: spoofed identity and destination fields are rejected loca
 });
 
 test("adversarial CLI: malformed and oversized input never causes a request", async () => {
-  for (const input of ["{", "null", "[]", JSON.stringify({ text: "x".repeat(65537) })]) {
+  for (const input of ["{", "null", "[]", JSON.stringify({ text: "x".repeat(128 * 1024) })]) {
     const r = await invoke(["send", "--json", "-"], { input });
     assert.notEqual(r.code, 0);
     assert.equal(r.calls, 0);
@@ -145,5 +145,18 @@ test("adversarial CLI: unexpected and oversized responses do not leak internals 
     assert.equal(r.calls, 1);
     assert.match(r.errors, /unreadable or oversized/);
     assert.ok(!r.errors.includes(TOKEN));
+  }
+});
+
+test("adversarial CLI: a credential that is not a ttm_ connection token never leaves the machine", async () => {
+  for (const token of [
+    "synthetic-review-token-not-a-real-secret-00001",
+    `${TOKEN}x`,
+    TOKEN.replace("ttm_", "abc_"),
+  ]) {
+    const r = await invoke(["inbox"], { env: { TALK_TO_ME_TOKEN: token } });
+    assert.equal(r.code, 2, token);
+    assert.equal(r.calls, 0, token);
+    assert.ok(!`${r.errors}${r.output}`.includes(token));
   }
 });

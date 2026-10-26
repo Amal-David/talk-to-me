@@ -111,3 +111,28 @@ test("cancel and revocation before wake dispatch suppress all external calls", a
     }
   }
 });
+
+test("a wake held back by a pause is sent once after resume, with no other traffic", async () => {
+  let calls = 0;
+  const f = await fixture(
+    wakeOptions(() => {
+      calls++;
+      return new Response(null, { status: 200 });
+    }),
+  );
+  try {
+    const request = await send(f);
+    await f.control({ paused: true });
+    // The wake falls due about one second after the send; the group is paused then.
+    await sleep(1600);
+    assert.equal(calls, 0);
+    await f.control({ paused: false });
+    await until(() => calls === 1);
+    const status = await f.api("alpha", `/requests/${request.id}`);
+    assert.equal(status.body.wake.state, "started");
+    await sleep(1300);
+    assert.equal(calls, 1);
+  } finally {
+    await f.close();
+  }
+});

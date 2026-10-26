@@ -527,3 +527,60 @@ test("adversarial Worker: UTF-8 byte bounds and expired token are enforced on ac
     assert.equal((await f.api("beta", "/inbox")).status, 200);
   });
 });
+
+test("adversarial Worker: text limits count the text, not its JSON escaping or a lone surrogate", async () => {
+  await using({ limits: { maxTextBytes: 16384 } }, async (f) => {
+    const sendText = (text, key) =>
+      f.api("alpha", "/requests", "POST", {
+        to: "beta",
+        topic: "general",
+        text,
+        idempotencyKey: key,
+      });
+    // 16,384 quote characters are 16 KiB of text but 32 KiB once escaped in JSON.
+    assert.equal((await sendText('"'.repeat(16384), "escaped")).status, 200);
+    assert.equal((await sendText('"'.repeat(16385), "too-long")).body.error, "invalid_text");
+    assert.equal((await sendText("x\ud800y", "surrogate")).body.error, "invalid_text");
+    const nullBody = await f.mf.dispatchFetch("https://relay.example/v1/groups/demo/requests", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokens.alpha}`, "Content-Type": "application/json" },
+      body: "null",
+    });
+    assert.deepEqual([nullBody.status, (await nullBody.json()).error], [400, "invalid_object"]);
+  });
+});
+
+test("adversarial Worker: an exact retry still succeeds after the group's limits are lowered", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "talk-to-me-retry-limits-"));
+  const body = {
+    to: "beta",
+    topic: "general",
+    text: "Synthetic",
+    idempotencyKey: "kept",
+    ttlSeconds: 7200,
+  };
+  let f;
+  try {
+    f = await fixture({ persist: dir, limits: { maxTtlSeconds: 86400 } });
+    const first = await f.api("alpha", "/requests", "POST", body);
+    assert.equal(first.status, 200);
+    await f.close();
+    f = await fixture({ persist: dir, limits: { maxTtlSeconds: 3600 } });
+    const retry = await f.api("alpha", "/requests", "POST", body);
+    assert.deepEqual([retry.status, retry.body.id], [200, first.body.id]);
+    // A new request still gets the lowered limit.
+    const fresh = await f.api("alpha", "/requests", "POST", { ...body, idempotencyKey: "new" });
+    assert.deepEqual([fresh.status, fresh.body.error], [400, "invalid_integer"]);
+    // The same holds for a request that left its TTL to the group's default.
+    const { ttlSeconds, ...defaulted } = { ...body, idempotencyKey: "defaulted" };
+    const sent = await f.api("alpha", "/requests", "POST", defaulted);
+    assert.equal(sent.status, 200);
+    await f.close();
+    f = await fixture({ persist: dir, limits: { maxTtlSeconds: 600 } });
+    const again = await f.api("alpha", "/requests", "POST", defaulted);
+    assert.deepEqual([again.status, again.body.id], [200, sent.body.id]);
+  } finally {
+    if (f) await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

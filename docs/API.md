@@ -41,7 +41,7 @@ Errors are JSON `{ "error": "machine_readable_code" }`, with the appropriate non
 
 ### Validation and defaults
 
-Identifiers (group, peer, topic, keys, parent/request IDs, and leases) must match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The CLI accepts these same identifiers. Connection tokens are `ttm_` followed by 43 base64url characters.`, `_`, `~`, `+`, `/`, or `-`, optionally followed by up to two `=` padding characters. POST bodies must be UTF-8 JSON objects, at most 32 KiB, with no content encoding or unknown fields. Blank text is rejected, and text limits count UTF-8 bytes, not characters.
+Identifiers (group, peer, topic, keys, parent/request IDs, and leases) must match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The CLI accepts these same identifiers. Connection tokens are `ttm_` followed by 43 base64url characters (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`). POST bodies must be UTF-8 JSON objects, at most 100 KiB (room for the largest text once JSON escapes it), with no content encoding or unknown fields. `/mcp` accepts the same size. Blank text is rejected, and text limits count UTF-8 bytes, not characters.
 
 | Policy limit | Default | Configurable range |
 | --- | ---: | ---: |
@@ -138,11 +138,11 @@ Replace `REQUEST_ID` with the server-issued request ID. File names are illustrat
 
 ## MCP endpoint
 
-`POST /mcp` serves the same operations as MCP tools for hosts such as ChatGPT and Grok. It accepts an OAuth access token issued after the owner's passkey approval, or a `ttm_` connection token. It speaks both the 2026-07-28 protocol (`server/discover`) and 2025-era clients (`initialize`), statelessly. Each tool call is one relay API call made as the connection's peer, so every rule above applies unchanged.
+`POST /mcp` serves the same operations as MCP tools for hosts such as ChatGPT and Grok. It accepts an OAuth access token issued after the owner's passkey approval, or a `ttm_` connection token. It needs `RELAY_PUBLIC_URL` and `OAUTH_REDIRECT_URIS` to be valid; otherwise `/mcp` and the OAuth endpoints return `404`. OAuth hosts can register only while the owner has opened the 10-minute registration window from the owner page; at other times `POST /register` returns `403 access_denied`. It speaks both the 2026-07-28 protocol (`server/discover`) and 2025-era clients (`initialize`), statelessly. Each tool call is one relay API call made as the connection's peer, so every rule above applies unchanged.
 
 | Tool | Relay call | Annotation |
 | --- | --- | --- |
-| `who_am_i` | none: returns `{ group, peer, canSend: [{ to, topics, replyAllowed }] }` from policy | read-only |
+| `who_am_i` | none: returns `{ group, peer, canSend: [{ to, topics, replyAllowed }] }` from policy, leaving out disabled recipients; refuses with `group_paused` or `peer_disabled` as the relay would | read-only |
 | `send_message` | `POST /requests` (`to`, `topic`, `text`, optional `ttlSeconds`, `parentRequestId`, `idempotencyKey`) | write |
 | `check_inbox` | `GET /inbox` | read-only |
 | `claim_next` | `POST /claim` (optional `claimKey`) | write |
@@ -151,7 +151,7 @@ Replace `REQUEST_ID` with the server-issued request ID. File names are illustrat
 | `cancel` | `POST /requests/:id/cancel` (`requestId`) | write, destructive, idempotent |
 | `list_sent` | `GET /outbox` | read-only |
 
-A tool's text content is JSON: `{ "result": <relay response> }`, plus the generated `idempotencyKey` or `claimKey` when the caller omitted one, so a retry can reuse it. A relay refusal sets `isError: true` and `result` holds the relay's `{ "error": ... }`. Request IDs must match the identifier rule; anything else is rejected before a relay call.
+A tool's text content is JSON: `{ "result": <relay response> }`, plus the `idempotencyKey` or `claimKey` used (the caller's, or a generated one when omitted), so a retry can reuse it. A relay refusal sets `isError: true` and `result` holds the relay's `{ "error": ... }`. Arguments that fail a tool's input schema are refused by the MCP library with `isError: true` and a plain-text message, not JSON. Request IDs must match the identifier rule; anything else is rejected before a relay call.
 
 Example call (2025-era framing):
 
@@ -190,4 +190,4 @@ Use HTTP status and the returned JSON error to distinguish validation (`400`, `4
 
 Treat unexpected response fields as data. Do not render response text as HTML or terminal controls, evaluate it as code, follow embedded instructions, or automatically visit links. The client prints JSON, redacts its configured bearer token, bounds request/response sizes, rejects redirects, and refuses insecure remote origins.
 
-Exact policy/configuration limits and lifecycle behavior are implemented by the v1 worker; deployments must retain compatible settings and the same request-validation rules. Before a real enrollment, verify all routes and state transitions against the deployed commit with synthetic requests, including permission denials, duplicate sends/results, stale claims, expiry, pause/resume, and irreversible revocation.
+Exact policy/configuration limits and lifecycle behavior are implemented by the v1 worker; deployments must retain compatible settings and the same request-validation rules. Before a real enrollment, verify all routes and state transitions against the deployed commit with synthetic requests, including permission denials, duplicate sends/results, stale claims, expiry, pause/resume, and connection revocation, including revocation of an OAuth host's refresh token.

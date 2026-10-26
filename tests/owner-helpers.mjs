@@ -153,8 +153,11 @@ export async function setUp(f, key = authenticator()) {
 
 export const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
 // An owner fixture with OAuth and the MCP endpoint enabled.
-export const oauthFixture = () =>
-  ownerFixture({ bindings: { OAUTH_REDIRECT_URIS: JSON.stringify([CHATGPT_REDIRECT]) } });
+export const oauthFixture = (options = {}) =>
+  ownerFixture({
+    ...options,
+    bindings: { OAUTH_REDIRECT_URIS: JSON.stringify([CHATGPT_REDIRECT]), ...options.bindings },
+  });
 
 export const LEGACY = "2025-11-25";
 export const MODERN = "2026-07-28";

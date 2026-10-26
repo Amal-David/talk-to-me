@@ -1,4 +1,11 @@
-import { CONNECTION_DAYS, groupChange, identityKey, LABEL_MAX, restoresAccess } from "./config";
+import {
+  CONNECTION_DAYS,
+  groupChange,
+  identityKey,
+  identityLabel,
+  LABEL_MAX,
+  restoresAccess,
+} from "./config";
 import type { ConnectionSummary, CredentialRow, GroupStatus, Identity } from "./types";
 
 const escapeHtml = (value: unknown) =>
@@ -69,10 +76,10 @@ const date = (ms: number | null) => (ms === null ? "never" : new Date(ms).toISOS
 
 function identityChoices(identities: Identity[]): string {
   const options = identities
-    .map(({ group, peer, routes }) => {
-      const sends = routes.map((r) => `${r.to} (${r.topics.join(", ")})`).join("; ") || "nothing";
-      return `<option value="${escapeHtml(identityKey({ group, peer }))}">${escapeHtml(`${peer} in ${group}`)}, can send to: ${escapeHtml(sends)}</option>`;
-    })
+    .map(
+      (i) =>
+        `<option value="${escapeHtml(identityKey(i))}">${escapeHtml(identityLabel(i))}</option>`,
+    )
     .join("");
   const days = CONNECTION_DAYS.map((d) => `<option value="${d}">${d} days</option>`).join("");
   return `<p><label>Act as <select id="identity">${options}</select></label></p>
@@ -85,6 +92,7 @@ export function homePage(
   connections: ConnectionSummary[],
   identities: Identity[],
   groups: GroupStatus[],
+  registrationOpenUntil: number,
 ): Response {
   // The server's own rule decides which buttons ask for a passkey first.
   const button = (action: string, group: string, peer?: string) =>
@@ -114,7 +122,10 @@ export function homePage(
     .join("");
   return page(
     "Relay owner",
-    `<h2>Groups</h2>${groupRows}
+    `<h2>Connect a new app</h2>
+<p>${registrationOpenUntil > Date.now() ? `Registration is open until ${escapeHtml(date(registrationOpenUntil))}.` : "Registration is closed."} Open it, then add the relay in ChatGPT or Grok within 10 minutes. You still approve the connection with your passkey.</p>
+<p><button id="register">Open registration for 10 minutes</button></p>
+<h2>Groups</h2>${groupRows}
 <p>Pausing a group or disabling a peer takes effect on the next call. Resuming or enabling asks for your passkey.</p>
 <h2>Connections</h2><ul>${live || "<li>None</li>"}</ul>
 <h3>New connection token</h3>
@@ -136,6 +147,7 @@ document.addEventListener('click', (e) => {
   const id = d.revoke;
   if (id) post('/owner/connections/revoke', { id }).then(() => location.reload(), (err) => show('Failed: ' + err.message));
 });
+run('register', async () => { await post('/owner/registration/open', {}); location.reload(); });
 run('mint', async () => {
   const assertion = await get(await post('/owner/connections/step-up', {}));
   const label = document.getElementById('label').value.trim();
@@ -153,25 +165,52 @@ run('out', async () => { await post('/owner/sign-out', {}); location.href = '/ow
   );
 }
 
+// An OAuth client names itself, so its name is untrusted: drop control and direction-override
+// characters, collapse whitespace and keep it short.
+export function cleanName(name: string): string {
+  const chars = Array.from(
+    name
+      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+  if (!chars.length) return "Unnamed app";
+  return chars.length > 60 ? `${chars.slice(0, 60).join("")}…` : chars.join("");
+}
+
 export function approvalPage(
   consent: { clientName: string; clientDomain?: string; redirectHost: string },
   handle: string,
-  identities: Identity[],
 ): Response {
   return page(
-    `Connect ${consent.clientName}?`,
-    `<p>${consent.clientDomain ? `Published by <strong>${escapeHtml(consent.clientDomain)}</strong>.` : "This app registered itself; its name is not verified."}</p>
+    "Connect an app?",
+    `<p>The app calls itself <strong>"${escapeHtml(cleanName(consent.clientName))}"</strong>.</p>
+<p>${consent.clientDomain ? `Published by <strong>${escapeHtml(consent.clientDomain)}</strong>.` : "This app registered itself; its name is not verified."}</p>
 <p>Access will be sent to <strong>${escapeHtml(consent.redirectHost)}</strong>.</p>
-${identityChoices(identities)}
-<p><button id="approve">Approve with passkey</button> <button id="deny">Deny</button></p>
+<p>Approve only a connection you just started yourself.</p>
+<p><button id="verify">Approve with passkey</button> <button id="deny">Deny</button></p>
+<div id="choose" hidden>
+${identityChoices([])}
+<p><button id="approve">Connect</button></p>
+</div>
 <input type="hidden" id="handle" value="${escapeHtml(handle)}">`,
     `${CHOICES_SCRIPT}
 const handle = document.getElementById('handle').value;
 const finish = async (body) => { location.href = (await post('/authorize', body)).redirectTo; };
-run('approve', async () => {
+run('verify', async () => {
   const assertion = await get(await post('/owner/approvals/options', { handle }));
-  await finish({ handle, decision: 'approve', assertion, ...choices() });
+  const { identities } = await post('/authorize', { handle, decision: 'verify', assertion });
+  const select = document.getElementById('identity');
+  for (const { id, label } of identities) {
+    const option = document.createElement('option');
+    option.value = id;
+    option.textContent = label;
+    select.append(option);
+  }
+  document.getElementById('verify').hidden = true;
+  document.getElementById('choose').hidden = false;
 });
+run('approve', () => finish({ handle, decision: 'approve', ...choices() }));
 run('deny', () => finish({ handle, decision: 'deny' }));`,
   );
 }

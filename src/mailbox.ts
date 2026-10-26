@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { config, routeAllowed, wakeEndpoint } from "./config";
+import { config, RANGES, routeAllowed, TEXT_BODY_BYTES, wakeEndpoint } from "./config";
 import type { Env, GroupControl, GroupPolicy, GroupState, Principal, RequestRow } from "./types";
 import {
   bodyJson,
@@ -12,6 +12,13 @@ import {
   response,
   textValue,
 } from "./validation";
+
+// Exact retries are checked against these absolute bounds; the group's own, possibly lowered,
+// limits apply only to new requests and results, so changing a limit never breaks a retry.
+const MAX_TEXT_BYTES = RANGES.maxTextBytes[1];
+const MAX_TTL_SECONDS = RANGES.maxTtlSeconds[1];
+// Fingerprinted as this constant, not the group's current cap, so lowering the cap keeps retries exact.
+const DEFAULT_TTL_SECONDS = 3600;
 
 interface ClaimRow extends Record<string, SqlStorageValue> {
   peer: string;
@@ -216,27 +223,23 @@ export class GroupMailbox extends DurableObject<Env> {
       const name = principal.group;
       const path = match[2] as string;
       const policy = config(this.env).groups[name] ?? fail(401, "unauthorized");
-      const body = request.method === "POST" ? await bodyJson(request) : {};
+      const body = request.method === "POST" ? await bodyJson(request, TEXT_BODY_BYTES) : {};
       // Hash before the transaction; all authority/state is checked again inside it.
       let fingerprint: string | undefined;
       if (path === "/requests" && request.method === "POST") {
         fields(body, ["to", "topic", "text", "idempotencyKey", "ttlSeconds", "parentRequestId"]);
         const to = identifier(body.to),
           topic = identifier(body.topic),
-          text = textValue(body.text, policy.limits.maxTextBytes);
+          text = textValue(body.text, MAX_TEXT_BYTES);
         identifier(body.idempotencyKey);
-        const ttl = integer(
-          body.ttlSeconds ?? Math.min(3600, policy.limits.maxTtlSeconds),
-          1,
-          policy.limits.maxTtlSeconds,
-        );
+        const ttl = integer(body.ttlSeconds ?? DEFAULT_TTL_SECONDS, 1, MAX_TTL_SECONDS);
         const parent = body.parentRequestId === undefined ? null : identifier(body.parentRequestId);
         fingerprint = await digest(JSON.stringify([to, topic, text, ttl, parent]));
       } else if (path.endsWith("/result") && request.method === "POST") {
         fields(body, ["leaseToken", "idempotencyKey", "text"]);
         identifier(body.leaseToken);
         identifier(body.idempotencyKey);
-        textValue(body.text, policy.limits.maxTextBytes);
+        textValue(body.text, MAX_TEXT_BYTES);
         fingerprint = await digest(JSON.stringify([body.idempotencyKey, body.text]));
       }
       const output = this.ctx.storage.transactionSync(() => {
@@ -311,6 +314,7 @@ export class GroupMailbox extends DurableObject<Env> {
               fail(409, "result_conflict");
             return this.view(row);
           }
+          textValue(body.text, policy.limits.maxTextBytes);
           this.liveLease(row, principal.peer, lease, now);
           this.sql.exec(
             "UPDATE requests SET state='completed',result_text=?,result_key=?,result_fingerprint=?,result_lease=?,terminal_at=?,purge_at=?,ack_at=COALESCE(ack_at,?),lease_token=NULL,lease_until=NULL WHERE id=?",
@@ -335,7 +339,7 @@ export class GroupMailbox extends DurableObject<Env> {
     }
   }
   // Called only by the Owner object after it has checked the owner's session.
-  control(group: string, change: GroupControl): GroupState {
+  async control(group: string, change: GroupControl): Promise<GroupState> {
     this.assertBound(group);
     this.ctx.storage.transactionSync(() => {
       if (change.paused !== undefined)
@@ -360,6 +364,8 @@ export class GroupMailbox extends DurableObject<Env> {
         "DELETE FROM events WHERE request_id IS NULL AND seq NOT IN (SELECT seq FROM events WHERE request_id IS NULL ORDER BY seq DESC LIMIT 1000)",
       );
     });
+    // Resuming must bring held-back wakes due again without waiting for other traffic.
+    await this.schedule();
     return this.status(group);
   }
   // Read-only, for the owner page; it never writes or creates group state.
@@ -400,6 +406,11 @@ export class GroupMailbox extends DurableObject<Env> {
       this.readAllowed(policy, principal, old);
       return this.view(old);
     }
+    const ttl =
+      (body.ttlSeconds as number | undefined) ??
+      Math.min(DEFAULT_TTL_SECONDS, policy.limits.maxTtlSeconds);
+    textValue(body.text, policy.limits.maxTextBytes);
+    integer(ttl, 1, policy.limits.maxTtlSeconds);
     const all = this.first<{ n: number }>("SELECT COUNT(*) AS n FROM requests")?.n ?? 0;
     const pending =
       this.first<{ n: number }>(
@@ -421,8 +432,6 @@ export class GroupMailbox extends DurableObject<Env> {
       hops = parent.hops + 1;
     }
     if (hops > policy.limits.maxHops) fail(403, "hop_limit");
-    const ttl =
-      (body.ttlSeconds as number | undefined) ?? Math.min(3600, policy.limits.maxTtlSeconds);
     const expires = Math.min(now + ttl * 1000, parent?.expires_at ?? Number.MAX_SAFE_INTEGER);
     const id = crypto.randomUUID();
     this.sql.exec(
@@ -531,7 +540,6 @@ export class GroupMailbox extends DurableObject<Env> {
       if (!pending) return undefined;
       const row = this.get(pending.request_id);
       if (
-        this.paused() ||
         row.state !== "pending" ||
         row.expires_at <= Date.now() ||
         !this.permitted(policy, row) ||
@@ -552,8 +560,14 @@ export class GroupMailbox extends DurableObject<Env> {
     await this.ctx.storage.sync(); // Persist intent BEFORE any external effect.
     // Sync can yield: recheck all mutable gates, then initiate fetch without another yield.
     const current = this.get(job.id);
+    if (this.paused()) {
+      this.sql.exec(
+        "UPDATE wakes SET state='pending',attempted_at=NULL WHERE request_id=? AND state='in_flight'",
+        job.id,
+      );
+      return;
+    }
     if (
-      this.paused() ||
       current.state !== "pending" ||
       current.expires_at <= Date.now() ||
       !this.permitted(policy, current)

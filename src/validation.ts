@@ -32,6 +32,8 @@ export function textValue(value: unknown, maxBytes: number): string {
   if (
     typeof value !== "string" ||
     value.trim().length === 0 ||
+    // A lone UTF-16 surrogate would be stored as U+FFFD and grow past the byte count checked here.
+    !value.isWellFormed() ||
     new TextEncoder().encode(value).length > maxBytes
   )
     fail(400, "invalid_text");
@@ -41,7 +43,10 @@ export async function digest(value: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(bytes)].map((v) => v.toString(16).padStart(2, "0")).join("");
 }
-export async function bodyJson(request: Request): Promise<Record<string, unknown>> {
+export async function bodyJson(
+  request: Request,
+  maxBytes = 32768,
+): Promise<Record<string, unknown>> {
   if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json")
     fail(415, "json_required");
   if (request.headers.has("content-encoding")) fail(415, "encoding_not_supported");
@@ -53,7 +58,7 @@ export async function bodyJson(request: Request): Promise<Record<string, unknown
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > 32768) {
+    if (total > maxBytes) {
       await reader.cancel();
       fail(413, "body_too_large");
     }
@@ -65,13 +70,13 @@ export async function bodyJson(request: Request): Promise<Record<string, unknown
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  let parsed: unknown;
   try {
-    return object(
-      JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)),
-    );
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
   } catch {
     return fail(400, "invalid_json");
   }
+  return object(parsed);
 }
 export function response(value: unknown, status = 200): Response {
   return Response.json(value, {

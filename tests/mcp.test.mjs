@@ -129,3 +129,19 @@ test("tool calls act only as their own peer and report refusals as tool errors",
     await f.close();
   }
 });
+
+test("who_am_i follows the owner's controls like the data tools", async () => {
+  const f = await oauthFixture();
+  try {
+    await f.control({ disablePeer: "beta" });
+    const alpha = await tool(f, tokens.alpha, "who_am_i");
+    assert.deepEqual(alpha.data.canSend, []);
+    const beta = await tool(f, tokens.beta, "who_am_i");
+    assert.deepEqual([beta.isError, beta.data.result.error], [true, "peer_disabled"]);
+    await f.control({ enablePeer: "beta", paused: true });
+    const paused = await tool(f, tokens.alpha, "who_am_i");
+    assert.deepEqual([paused.isError, paused.data.result.error], [true, "group_paused"]);
+  } finally {
+    await f.close();
+  }
+});

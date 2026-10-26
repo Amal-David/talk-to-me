@@ -207,9 +207,10 @@ Nothing in this phase runs against Cloudflare, ChatGPT or Grok without the owner
 #### What the owner does (needs their accounts or devices)
 
 - Generate and store `OWNER_SETUP_CODE` without it passing through chat (commands below), then register two passkeys at `https://<host>/owner/setup` on different devices.
+- Before adding each connector, sign in at `https://<host>/owner` and choose **Open registration for 10 minutes**; registration is refused otherwise.
 - In ChatGPT: delete the spike connectors, add `https://<host>/mcp`, use the connector page's **Connect** button, approve as `dots`. In Grok: delete the spike connector, add the same URL, approve as `grok`.
 - Delete the spike passkey (for the old trycloudflare address) from the password manager.
-- Not available on `workers.dev`: a Cloudflare rate-limiting rule on `/owner/*` needs a zone. The relay's own limits still apply (5 setup-code guesses per 15 minutes, newest 1,000 challenges kept); moving to a custom domain later would allow the rule.
+- Not available on `workers.dev`: a Cloudflare rate-limiting rule on `/owner/*` needs a zone. The relay's own limits still apply (OAuth registration only while the owner has it open, newest 1,000 challenges kept); moving to a custom domain later would allow the rule.
 - Optional: Grok Premium, to test Grok Bot with a `ttm_` token in its header field.
 
 #### What Claude does (each outward step confirmed first)

@@ -21,7 +21,7 @@ export const DEFAULT_LIMITS: Limits = {
   retentionSeconds: 604800,
   ratePerMinute: 120,
 };
-const RANGES: Record<keyof Limits, [number, number]> = {
+export const RANGES: Record<keyof Limits, [number, number]> = {
   leaseSeconds: [1, 300],
   maxAttempts: [1, 10],
   maxPending: [1, 1000],
@@ -33,6 +33,8 @@ const RANGES: Record<keyof Limits, [number, number]> = {
   retentionSeconds: [1, 2592000],
   ratePerMinute: [1, 1000],
 };
+// JSON escaping can grow a text up to six times on the wire; the rest is room for other fields.
+export const TEXT_BODY_BYTES = 6 * RANGES.maxTextBytes[1] + 4096;
 function list(value: unknown, max: number): unknown[] {
   if (!Array.isArray(value) || value.length > max) fail(400, "invalid_list");
   return value as unknown[];
@@ -149,6 +151,9 @@ export function identities(cfg: Config): Identity[] {
     })),
   );
 }
+// How the owner sees an identity when choosing one for a connection.
+export const identityLabel = ({ group, peer, routes }: Identity) =>
+  `${peer} in ${group}, can send to: ${routes.map((r) => `${r.to} (${r.topics.join(", ")})`).join("; ") || "nothing"}`;
 // A connection's identity travels as "group/peer"; neither part can contain "/".
 export const identityKey = ({ group, peer }: Pick<Identity, "group" | "peer">) =>
   `${group}/${peer}`;

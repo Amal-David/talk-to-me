@@ -5,11 +5,19 @@ import {
   type OAuthHelpers,
   OAuthProvider,
 } from "@cloudflare/workers-oauth-provider";
-import { config, connectionDays, identities, identity, identityKey, LABEL_MAX } from "./config";
+import {
+  config,
+  connectionDays,
+  identities,
+  identity,
+  identityKey,
+  identityLabel,
+  LABEL_MAX,
+} from "./config";
 import { mcpResponse } from "./mcp";
-import { approvalPage } from "./owner-pages";
+import { approvalPage, cleanName } from "./owner-pages";
 import type { ConnectionProps, Env } from "./types";
-import { bodyJson, errorResponse, fail, fields, response, textValue } from "./validation";
+import { bodyJson, digest, errorResponse, fail, fields, response, textValue } from "./validation";
 
 type OAuthEnv = Env & { OAUTH_PROVIDER: OAuthHelpers };
 export const owner = (env: Env) => env.OWNER.get(env.OWNER.idFromName("owner"));
@@ -33,8 +41,8 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
     if (!allowlist.includes(authRequest.redirectUri)) fail(400, "redirect_not_allowed");
     const details = await oauth.describeConsent(authRequest);
     const consent = await oauth.beginConsent(authRequest);
-    const page = approvalPage(details, consent.handle, identities(config(env)));
-    return withLibraryHeaders(page, consent.headers);
+    // No agent names on this page: anyone can reach it, so they appear only after the passkey.
+    return withLibraryHeaders(approvalPage(details, consent.handle), consent.headers);
   }
   if (request.method !== "POST") fail(405, "method_not_allowed");
   if (request.headers.get("origin") !== new URL(request.url).origin) fail(403, "origin_mismatch");
@@ -46,13 +54,26 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
     const denied = await oauth.denyConsent(request, handle);
     return withLibraryHeaders(response({ redirectTo: denied.redirectTo }), denied.headers);
   }
-  fields(body, ["handle", "decision", "assertion", "identity", "days"]);
+  const relayOwner = owner(env);
+  // Step 1: the owner's passkey, checked before the consent is consumed so a failed touch can
+  // be retried. Only then does the page learn which agents a connection may act as.
+  if (body.decision === "verify") {
+    fields(body, ["handle", "decision", "assertion"]);
+    if (!(await relayOwner.verifyApproval(handle, body.assertion)))
+      fail(401, "passkey_not_verified");
+    return response({
+      identities: identities(config(env)).map((i) => ({
+        id: identityKey(i),
+        label: identityLabel(i),
+      })),
+    });
+  }
+  // Step 2: the owner's choice, accepted once per verified approval.
+  fields(body, ["handle", "decision", "identity", "days"]);
   if (body.decision !== "approve") fail(400, "invalid_decision");
   const target = identity(config(env), body.identity);
   const days = connectionDays(body.days);
-  const relayOwner = owner(env);
-  // The passkey check comes before consuming the consent, so a failed touch can be retried.
-  if (!(await relayOwner.verifyApproval(handle, body.assertion))) fail(401, "passkey_not_verified");
+  if (!(await relayOwner.consumeApproval(handle))) fail(401, "passkey_not_verified");
   const approved = await oauth.approveConsent(request, handle);
   const authRequest = approved.request;
   // Checked again because the allowlist can change between page load and approval.
@@ -61,18 +82,27 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
   const props = await relayOwner.createConnection({
     ...target,
     days,
-    label: Array.from(`${details.clientName} → ${details.redirectHost}`)
+    // Host first, so truncating a long self-chosen name never hides where access goes.
+    label: Array.from(`${details.redirectHost}: ${cleanName(details.clientName)}`)
       .slice(0, LABEL_MAX)
       .join(""),
     credential: { kind: "oauth", clientId: authRequest.clientId },
   });
-  const { redirectTo } = await oauth.completeAuthorization({
-    request: authRequest,
-    userId: identityKey(target),
-    metadata: {},
-    scope: authRequest.scope,
-    props,
-  });
+  let redirectTo: string;
+  try {
+    ({ redirectTo } = await oauth.completeAuthorization({
+      request: authRequest,
+      // The library forbids ":" in user IDs, which group and peer IDs may contain.
+      userId: await digest(identityKey(target)),
+      metadata: {},
+      scope: authRequest.scope,
+      props,
+    }));
+  } catch (error) {
+    // No grant was issued, so the connection must not stay live.
+    await relayOwner.revokeConnection(props.connectionId);
+    throw error;
+  }
   return withLibraryHeaders(response({ redirectTo }), approved.headers);
 }
 
@@ -122,6 +152,9 @@ export function oauthProvider(
       const uris = clientMetadata.redirect_uris;
       if (!Array.isArray(uris) || !uris.length || !uris.every((uri) => allowlist.includes(uri)))
         return { code: "invalid_redirect_uri", description: "redirect_uri is not allowed" };
+      const name = clientMetadata.client_name;
+      if (typeof name === "string" && name.length > 200)
+        return { code: "invalid_client_metadata", description: "client_name is too long" };
       return undefined;
     },
     tokenExchangeCallback: async ({ grantType, props, env }) => {
@@ -135,6 +168,8 @@ export function oauthProvider(
         throw new OAuthError("invalid_grant", { description: "connection is no longer active" });
       return undefined;
     },
+    // The default logs error descriptions, some of which echo caller input.
+    onError: () => undefined,
     resolveExternalToken: async ({ token, env }) => {
       const props = await owner(env).tokenConnection(token);
       return props ? { props, audience: resource } : null;
