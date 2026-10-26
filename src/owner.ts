@@ -46,8 +46,6 @@ const SESSION_SECONDS = 900;
 const CHALLENGE_MS = 300_000;
 // Anyone can request a sign-in challenge, so a full table evicts the oldest instead of refusing.
 const MAX_CHALLENGES = 1000;
-const SETUP_FAILURES = 5;
-const SETUP_WINDOW_MS = 900_000;
 // Each challenge is issued for one purpose and only verifies that purpose.
 const PURPOSE = {
   setup: "setup",
@@ -320,26 +318,19 @@ export class Owner extends DurableObject<Env> {
       fail(503, "setup_unavailable");
     return code as string;
   }
-  // A code value works once; setting a different OWNER_SETUP_CODE allows recovery.
+  // A code value works once; setting a different OWNER_SETUP_CODE allows recovery. There is no
+  // failure lockout: the code has at least 192 bits, and a shared counter would let anyone lock
+  // the owner out of enrollment and recovery.
   private async checkSetupCode(input: unknown): Promise<string> {
     const hash = await digest(this.setupCode());
     if (this.setting("used_setup_code") === hash) fail(409, "setup_code_used");
-    const now = Date.now();
-    const failures = JSON.parse(this.setting("setup_failures") ?? '{"since":0,"count":0}') as {
-      since: number;
-      count: number;
-    };
-    const current = now - failures.since < SETUP_WINDOW_MS ? failures : { since: now, count: 0 };
-    if (current.count >= SETUP_FAILURES) fail(429, "too_many_attempts");
     const encoder = new TextEncoder();
     // Both sides are SHA-256 hex digests, so the lengths always match.
     if (
       typeof input !== "string" ||
       !crypto.subtle.timingSafeEqual(encoder.encode(await digest(input)), encoder.encode(hash))
-    ) {
-      this.put("setup_failures", JSON.stringify({ ...current, count: current.count + 1 }));
+    )
       fail(403, "invalid_setup_code");
-    }
     return hash;
   }
 

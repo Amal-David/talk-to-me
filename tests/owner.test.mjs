@@ -19,16 +19,15 @@ test("setup registers the first passkey once, starts a session and burns the cod
   }
 });
 
-test("setup code guesses are rate-limited, even before a correct guess", async () => {
+test("wrong setup code guesses never lock the owner out of the correct code", async () => {
   const f = await ownerFixture();
   try {
-    for (let i = 0; i < 5; i++)
+    for (let i = 0; i < 20; i++)
       assert.equal(
         (await f.owner("/owner/setup/options", { code: `wrong-${i}`.repeat(8) })).status,
         403,
       );
-    const locked = await f.owner("/owner/setup/options", { code: SETUP_CODE });
-    assert.deepEqual([locked.status, locked.body.error], [429, "too_many_attempts"]);
+    assert.equal((await f.owner("/owner/setup/options", { code: SETUP_CODE })).status, 200);
   } finally {
     await f.close();
   }
