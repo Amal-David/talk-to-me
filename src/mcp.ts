@@ -159,6 +159,7 @@ function relayServer(env: Env, principal: Principal): McpServer {
 // Stateless: every request gets a fresh server bound to the caller, for both protocol eras.
 export function mcpResponse(request: Request, env: Env, principal: Principal): Promise<Response> {
   return createMcpHandler(() => relayServer(env, principal), {
-    maxRequestBodySize: 65_536,
+    // Room for the largest text after JSON escaping, inside the JSON-RPC envelope.
+    maxRequestBodySize: 131_072,
   }).fetch(request);
 }

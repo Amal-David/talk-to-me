@@ -21,7 +21,7 @@ export const DEFAULT_LIMITS: Limits = {
   retentionSeconds: 604800,
   ratePerMinute: 120,
 };
-const RANGES: Record<keyof Limits, [number, number]> = {
+export const RANGES: Record<keyof Limits, [number, number]> = {
   leaseSeconds: [1, 300],
   maxAttempts: [1, 10],
   maxPending: [1, 1000],
