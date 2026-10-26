@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { config, RANGES, routeAllowed, wakeEndpoint } from "./config";
+import { config, RANGES, routeAllowed, TEXT_BODY_BYTES, wakeEndpoint } from "./config";
 import type { Env, GroupControl, GroupPolicy, GroupState, Principal, RequestRow } from "./types";
 import {
   bodyJson,
@@ -17,8 +17,8 @@ import {
 // limits apply only to new requests and results, so changing a limit never breaks a retry.
 const MAX_TEXT_BYTES = RANGES.maxTextBytes[1];
 const MAX_TTL_SECONDS = RANGES.maxTtlSeconds[1];
-// JSON escaping can grow a text up to six times on the wire.
-const MAILBOX_BODY_BYTES = 6 * MAX_TEXT_BYTES + 4096;
+// Fingerprinted as this constant, not the group's current cap, so lowering the cap keeps retries exact.
+const DEFAULT_TTL_SECONDS = 3600;
 
 interface ClaimRow extends Record<string, SqlStorageValue> {
   peer: string;
@@ -223,7 +223,7 @@ export class GroupMailbox extends DurableObject<Env> {
       const name = principal.group;
       const path = match[2] as string;
       const policy = config(this.env).groups[name] ?? fail(401, "unauthorized");
-      const body = request.method === "POST" ? await bodyJson(request, MAILBOX_BODY_BYTES) : {};
+      const body = request.method === "POST" ? await bodyJson(request, TEXT_BODY_BYTES) : {};
       // Hash before the transaction; all authority/state is checked again inside it.
       let fingerprint: string | undefined;
       if (path === "/requests" && request.method === "POST") {
@@ -232,11 +232,7 @@ export class GroupMailbox extends DurableObject<Env> {
           topic = identifier(body.topic),
           text = textValue(body.text, MAX_TEXT_BYTES);
         identifier(body.idempotencyKey);
-        const ttl = integer(
-          body.ttlSeconds ?? Math.min(3600, policy.limits.maxTtlSeconds),
-          1,
-          MAX_TTL_SECONDS,
-        );
+        const ttl = integer(body.ttlSeconds ?? DEFAULT_TTL_SECONDS, 1, MAX_TTL_SECONDS);
         const parent = body.parentRequestId === undefined ? null : identifier(body.parentRequestId);
         fingerprint = await digest(JSON.stringify([to, topic, text, ttl, parent]));
       } else if (path.endsWith("/result") && request.method === "POST") {
@@ -411,7 +407,8 @@ export class GroupMailbox extends DurableObject<Env> {
       return this.view(old);
     }
     const ttl =
-      (body.ttlSeconds as number | undefined) ?? Math.min(3600, policy.limits.maxTtlSeconds);
+      (body.ttlSeconds as number | undefined) ??
+      Math.min(DEFAULT_TTL_SECONDS, policy.limits.maxTtlSeconds);
     textValue(body.text, policy.limits.maxTextBytes);
     integer(ttl, 1, policy.limits.maxTtlSeconds);
     const all = this.first<{ n: number }>("SELECT COUNT(*) AS n FROM requests")?.n ?? 0;
@@ -540,8 +537,7 @@ export class GroupMailbox extends DurableObject<Env> {
       const pending = this.first<WakeRow>(
         "SELECT * FROM wakes WHERE state='pending' ORDER BY request_id LIMIT 1",
       );
-      // A pause holds wakes back; they stay pending and go out after resume.
-      if (!pending || this.paused()) return undefined;
+      if (!pending) return undefined;
       const row = this.get(pending.request_id);
       if (
         row.state !== "pending" ||

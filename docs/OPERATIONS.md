@@ -51,7 +51,7 @@ Provide `TALK_TO_ME_URL`, `TALK_TO_ME_GROUP`, and `TALK_TO_ME_TOKEN` through an 
 
 Every normal command prints the relay JSON response. Validation errors use exit code 2; HTTP/network/client failures use 1; successful responses and help use 0. Standard output carries successful responses; standard error carries errors. Known bearer-token occurrences in returned JSON are redacted. This is defense in depth, not a secret-scanning or DLP system: it does not detect arbitrary credentials, private text, or encoded secrets.
 
-JSON body input can come from `--json FILE` or `--json -`. Do not mix it with body flags. Use JSON input for private text and leases to avoid process arguments and shell history. The CLI reads at most 64 KiB of input, caps the serialized wire body at 32 KiB, reads at most 4 MiB of response, uses a 15-second network timeout, rejects redirects, and never retries or executes received text. The server applies tighter configurable per-text limits as well.
+JSON body input can come from `--json FILE` or `--json -`. Do not mix it with body flags. Use JSON input for private text and leases to avoid process arguments and shell history. The CLI reads at most 128 KiB of input, caps the serialized wire body at the relay's 100 KiB, reads at most 4 MiB of response, uses a 15-second network timeout, rejects redirects, and never retries or executes received text. The server applies tighter configurable per-text limits as well.
 
 ## Delivery, retries, and recovery
 

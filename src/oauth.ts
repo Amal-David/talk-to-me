@@ -6,7 +6,6 @@ import {
   OAuthProvider,
 } from "@cloudflare/workers-oauth-provider";
 import {
-  CONNECTION_DAYS,
   config,
   connectionDays,
   identities,
@@ -67,7 +66,6 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
         id: identityKey(i),
         label: identityLabel(i),
       })),
-      days: CONNECTION_DAYS,
     });
   }
   // Step 2: the owner's choice, accepted once per verified approval.

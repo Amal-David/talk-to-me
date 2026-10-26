@@ -41,7 +41,7 @@ Errors are JSON `{ "error": "machine_readable_code" }`, with the appropriate non
 
 ### Validation and defaults
 
-Identifiers (group, peer, topic, keys, parent/request IDs, and leases) must match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The CLI accepts these same identifiers. Connection tokens are `ttm_` followed by 43 base64url characters (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`). POST bodies must be UTF-8 JSON objects, at most 32 KiB, with no content encoding or unknown fields. Blank text is rejected, and text limits count UTF-8 bytes, not characters.
+Identifiers (group, peer, topic, keys, parent/request IDs, and leases) must match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The CLI accepts these same identifiers. Connection tokens are `ttm_` followed by 43 base64url characters (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`). POST bodies must be UTF-8 JSON objects, at most 100 KiB (room for the largest text once JSON escapes it), with no content encoding or unknown fields. `/mcp` accepts the same size. Blank text is rejected, and text limits count UTF-8 bytes, not characters.
 
 | Policy limit | Default | Configurable range |
 | --- | ---: | ---: |

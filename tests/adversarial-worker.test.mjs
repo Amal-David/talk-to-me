@@ -571,6 +571,14 @@ test("adversarial Worker: an exact retry still succeeds after the group's limits
     // A new request still gets the lowered limit.
     const fresh = await f.api("alpha", "/requests", "POST", { ...body, idempotencyKey: "new" });
     assert.deepEqual([fresh.status, fresh.body.error], [400, "invalid_integer"]);
+    // The same holds for a request that left its TTL to the group's default.
+    const { ttlSeconds, ...defaulted } = { ...body, idempotencyKey: "defaulted" };
+    const sent = await f.api("alpha", "/requests", "POST", defaulted);
+    assert.equal(sent.status, 200);
+    await f.close();
+    f = await fixture({ persist: dir, limits: { maxTtlSeconds: 600 } });
+    const again = await f.api("alpha", "/requests", "POST", defaulted);
+    assert.deepEqual([again.status, again.body.id], [200, sent.body.id]);
   } finally {
     if (f) await f.close();
     await rm(dir, { recursive: true, force: true });

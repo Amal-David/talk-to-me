@@ -28,13 +28,12 @@ export function integer(value: unknown, minimum: number, maximum: number): numbe
     fail(400, "invalid_integer");
   return value as number;
 }
-// A lone UTF-16 surrogate would be stored as U+FFFD and grow past the byte count checked here.
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 export function textValue(value: unknown, maxBytes: number): string {
   if (
     typeof value !== "string" ||
     value.trim().length === 0 ||
-    LONE_SURROGATE.test(value) ||
+    // A lone UTF-16 surrogate would be stored as U+FFFD and grow past the byte count checked here.
+    !value.isWellFormed() ||
     new TextEncoder().encode(value).length > maxBytes
   )
     fail(400, "invalid_text");

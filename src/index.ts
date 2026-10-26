@@ -37,7 +37,7 @@ async function relayRoutes(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const { protocol, hostname } = new URL(request.url);
+    const { protocol, hostname, pathname } = new URL(request.url);
     // Checked before any route, OAuth endpoints included.
     if (protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(hostname))
       return response({ error: "https_required" }, 400);
@@ -50,8 +50,13 @@ export default {
       // Without a valid relay origin and redirect allowlist there are no OAuth endpoints at all.
       return relayRoutes(request, env);
     }
-    // New OAuth clients may register only while the owner has registration open.
-    if (new URL(request.url).pathname === "/register" && !(await owner(env).registrationOpen()))
+    // New OAuth clients may register only while the owner has registration open; the library
+    // refuses other methods without storage.
+    if (
+      pathname === "/register" &&
+      request.method === "POST" &&
+      !(await owner(env).registrationOpen())
+    )
       return response(
         {
           error: "access_denied",

@@ -266,7 +266,10 @@ export class Owner extends DurableObject<Env> {
   // Anyone could otherwise register an OAuth client and write to KV; the owner opens a short
   // window from the signed-in owner page before adding a host.
   registrationOpen(): boolean {
-    return Number(this.setting("registration_open_until") ?? 0) > Date.now();
+    return this.registrationOpenUntil() > Date.now();
+  }
+  private registrationOpenUntil(): number {
+    return Number(this.setting("registration_open_until") ?? 0);
   }
   revokeConnection(id: string): void {
     this.sql.exec(
@@ -418,7 +421,7 @@ export class Owner extends DurableObject<Env> {
             this.connections(),
             identities(cfg),
             groups,
-            Number(this.setting("registration_open_until") ?? 0),
+            this.registrationOpenUntil(),
           );
         }
         return fail(404, "not_found");

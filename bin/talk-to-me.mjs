@@ -3,8 +3,9 @@
 import { createReadStream } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const INPUT_LIMIT = 64 * 1024;
-const BODY_LIMIT = 32 * 1024;
+const INPUT_LIMIT = 128 * 1024;
+// The relay's TEXT_BODY_BYTES: its largest text at six times its size once JSON-escaped, plus 4 KiB.
+const BODY_LIMIT = 100 * 1024;
 const OUTPUT_LIMIT = 4 * 1024 * 1024;
 const COMMANDS = new Set(["send", "inbox", "outbox", "claim", "ack", "result", "status", "cancel"]);
 const HELP = `talk-to-me: private text request/reply relay (Node.js 22.13+)
@@ -78,7 +79,8 @@ export function configuration(env = process.env) {
   }
   const group = segment(env.TALK_TO_ME_GROUP, "TALK_TO_ME_GROUP");
   const token = assertString(env.TALK_TO_ME_TOKEN, "TALK_TO_ME_TOKEN");
-  // Only connection tokens minted on the relay's owner page; anything else never leaves the machine.
+  // Only connection tokens minted on the relay's owner page (CONNECTION_TOKEN in src/owner.ts);
+  // anything else never leaves the machine.
   if (!/^ttm_[A-Za-z0-9_-]{43}$/.test(token)) {
     throw new ClientError(
       "TALK_TO_ME_TOKEN must be a ttm_ connection token from the relay's owner page.",
@@ -200,7 +202,7 @@ export function validateBody(command, body) {
     throw new ClientError("ttlSeconds must be a positive integer.");
   }
   if (Buffer.byteLength(JSON.stringify(body), "utf8") > BODY_LIMIT)
-    throw new ClientError("Serialized request body exceeds 32 KiB.");
+    throw new ClientError("Serialized request body exceeds 100 KiB.");
   return body;
 }
 

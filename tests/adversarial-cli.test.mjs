@@ -130,7 +130,7 @@ test("adversarial CLI: spoofed identity and destination fields are rejected loca
 });
 
 test("adversarial CLI: malformed and oversized input never causes a request", async () => {
-  for (const input of ["{", "null", "[]", JSON.stringify({ text: "x".repeat(65537) })]) {
+  for (const input of ["{", "null", "[]", JSON.stringify({ text: "x".repeat(128 * 1024) })]) {
     const r = await invoke(["send", "--json", "-"], { input });
     assert.notEqual(r.code, 0);
     assert.equal(r.calls, 0);

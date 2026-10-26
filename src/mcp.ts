@@ -1,6 +1,6 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
-import { config, identities } from "./config";
+import { config, identities, TEXT_BODY_BYTES } from "./config";
 import type { Env, Principal } from "./types";
 import { IDENTIFIER } from "./validation";
 
@@ -164,7 +164,6 @@ function relayServer(env: Env, principal: Principal): McpServer {
 // Stateless: every request gets a fresh server bound to the caller, for both protocol eras.
 export function mcpResponse(request: Request, env: Env, principal: Principal): Promise<Response> {
   return createMcpHandler(() => relayServer(env, principal), {
-    // Room for the largest text after JSON escaping, inside the JSON-RPC envelope.
-    maxRequestBodySize: 131_072,
+    maxRequestBodySize: TEXT_BODY_BYTES,
   }).fetch(request);
 }

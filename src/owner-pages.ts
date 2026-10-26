@@ -190,28 +190,23 @@ export function approvalPage(
 <p>Approve only a connection you just started yourself.</p>
 <p><button id="verify">Approve with passkey</button> <button id="deny">Deny</button></p>
 <div id="choose" hidden>
-<p><label>Act as <select id="identity"></select></label></p>
-<p><label>Expires after <select id="days"></select></label></p>
+${identityChoices([])}
 <p><button id="approve">Connect</button></p>
 </div>
 <input type="hidden" id="handle" value="${escapeHtml(handle)}">`,
     `${CHOICES_SCRIPT}
 const handle = document.getElementById('handle').value;
 const finish = async (body) => { location.href = (await post('/authorize', body)).redirectTo; };
-const fill = (id, items) => {
-  const select = document.getElementById(id);
-  for (const [value, text] of items) {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = text;
-    select.append(option);
-  }
-};
 run('verify', async () => {
   const assertion = await get(await post('/owner/approvals/options', { handle }));
-  const { identities, days } = await post('/authorize', { handle, decision: 'verify', assertion });
-  fill('identity', identities.map((i) => [i.id, i.label]));
-  fill('days', days.map((d) => [String(d), d + ' days']));
+  const { identities } = await post('/authorize', { handle, decision: 'verify', assertion });
+  const select = document.getElementById('identity');
+  for (const { id, label } of identities) {
+    const option = document.createElement('option');
+    option.value = id;
+    option.textContent = label;
+    select.append(option);
+  }
   document.getElementById('verify').hidden = true;
   document.getElementById('choose').hidden = false;
 });

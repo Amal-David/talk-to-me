@@ -33,6 +33,8 @@ export const RANGES: Record<keyof Limits, [number, number]> = {
   retentionSeconds: [1, 2592000],
   ratePerMinute: [1, 1000],
 };
+// JSON escaping can grow a text up to six times on the wire; the rest is room for other fields.
+export const TEXT_BODY_BYTES = 6 * RANGES.maxTextBytes[1] + 4096;
 function list(value: unknown, max: number): unknown[] {
   if (!Array.isArray(value) || value.length > max) fail(400, "invalid_list");
   return value as unknown[];
