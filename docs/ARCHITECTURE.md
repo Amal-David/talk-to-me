@@ -2,7 +2,7 @@
 
 ## Components
 
-- The edge Worker validates deployment policy and authenticates every caller. `ttm_` connection tokens on `/v1` and OAuth access tokens on `/mcp` both resolve, through the single `Owner` Durable Object, to one live connection with an exact group and peer. The `Owner` object also holds the owner's passkeys, sessions and the connections table, so revoking a connection takes effect on the next call.
+- The edge Worker validates deployment policy and authenticates every caller. `ttm_` connection tokens on `/v1` and OAuth access tokens on `/mcp` both resolve, through the single `Owner` Durable Object, to one live connection with an exact group and peer. The `Owner` object also holds the owner's passkeys, sessions and the connections table, so revoking a connection takes effect on the next call. A connection's expiry and revocation are checked there, before the mailbox is called. The same object holds the OAuth registration window the owner opens and the single-use record that an approval's passkey assertion was verified, which the final approve step consumes.
 - `GroupMailbox` is a SQLite-backed Durable Object named by private group ID. It has no fetch handler: the Worker calls its `handle(request, principal)` RPC method with the authenticated group and peer, and the owner page calls its `control()` RPC method. It verifies that the group maps to its own object ID. No identity header is read.
 - The SQLite `requests` table is both the sender outbox and recipient inbox, viewed through separate authorization predicates. One row contains the canonical request and optional final result so completion is atomic, not a cross-service write.
 - `claims` stores stable operation receipts and fencing nonces. Empty polls also have durable receipts. `wakes` is the optional external-effect outbox. `disabled_peers`, `settings`, `rates`, and metadata-only `events` implement controls and bounds.
@@ -14,7 +14,7 @@ No D1, Queues, R2, service discovery, universal bot credential, private provider
 
 1. Bounded UTF-8 parsing and strict field validation happen before mutation.
 2. Immutable request fields are hashed before entering the state transaction. Sender identity comes from the authenticated credential.
-3. A synchronous SQLite transaction rechecks token deadline, peer revocation, group pause, sender/recipient/topic scope, limits, and optional parent lineage. It reconciles due lifecycle state.
+3. A synchronous SQLite transaction rechecks peer disablement, group pause, sender/recipient/topic scope, limits, and optional parent lineage. It reconciles due lifecycle state.
 4. An existing `(sender, idempotencyKey)` returns the original request only if both the fingerprint and current read permissions match. A changed body conflicts; deadlines never extend.
 5. Otherwise the transaction persists the request, metadata event, and optional pending wake outbox row together.
 6. Maintenance is scheduled and Cloudflare's storage/output gating prevents a successful response preceding durable storage commitment. A dropped HTTP response can be retried with the original key.
@@ -45,4 +45,4 @@ Before HTTP, the Durable Object checks live request/policy controls, records an 
 
 ## Future extensions
 
-An A2A facade would require a selected protocol/SDK version, an explicit supported capability subset, authorization mapping, correlation/state mapping, and conformance tests. This API is not A2A-compatible today. MCP tools, pagination, reviewed archival, richer operational controls, and verified host adapters are separate future work, not implicit capabilities of v0.1.
+An A2A facade would require a selected protocol/SDK version, an explicit supported capability subset, authorization mapping, correlation/state mapping, and conformance tests. This API is not A2A-compatible today. Pagination, reviewed archival, richer operational controls, and verified host adapters are separate future work.

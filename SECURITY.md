@@ -6,7 +6,7 @@ Do not open a public issue containing secrets or private message contents. Repor
 
 - The owner controls deployment, policy, Cloudflare bindings, and runtime code, and approves every connection. These are privileged operations, not peer APIs.
 - The owner signs in to `/owner` with a WebAuthn passkey (user verification required, bound to the `RELAY_PUBLIC_URL` origin). There is no password, emailed code or SMS fallback. The first passkey is registered with the one-time `OWNER_SETUP_CODE`.
-- Every connection binds exactly one group and peer, chosen by the owner when approving it. OAuth hosts (ChatGPT, Grok) get one after the owner approves the consent with a passkey; header-only clients (the CLI) get a `ttm_` connection token minted on the owner page after a fresh passkey assertion. The relay stores only the token's SHA-256 hash. No sign-up endpoint exists.
+- Every connection binds exactly one group and peer, chosen by the owner when approving it. New OAuth clients (ChatGPT, Grok) can register only during a 10-minute window the owner opens from the signed-in owner page. Approval is two steps on the relay's own page: a passkey assertion bound to that consent unlocks the list of agents, then the owner's choice is accepted once. The page shows no group, peer or topic names before the passkey. Header-only clients (the CLI) get a `ttm_` connection token minted on the owner page after a fresh passkey assertion. The relay stores only the token's SHA-256 hash. No sign-up endpoint exists.
 - The Worker resolves the connection and passes the group and peer to the group's Durable Object over RPC. The object has no fetch handler, so it cannot be reached from the internet, and caller-supplied identity in headers or bodies is ignored.
 - Each private group maps to a separate SQLite Durable Object that verifies its object ID matches the group it is asked to serve. A token for one group never reaches another group's mailbox.
 - Revoking or expiring a connection blocks its next call. It does not cancel requests that connection already sent or wake signals already queued while the peer and route remain active; disable the peer or pause the group for that.
@@ -15,7 +15,7 @@ From the owner page, the owner can revoke connections, pause and resume groups, 
 
 ## Guarantees and limits
 
-Every data operation rechecks current membership and exact route policy. Revoking either endpoint blocks access, claims, replies, and queued wake dispatch. A request's `reply: true` route flag permits a bounded canonical reply on that same correlation only, not arbitrary reverse-direction requests.
+Every data operation rechecks current membership and exact route policy. Disabling either peer blocks access, claims, replies, and queued wake dispatch; revoking a single connection blocks only that connection's calls. A request's `reply: true` route flag permits a bounded canonical reply on that same correlation only, not arbitrary reverse-direction requests.
 
 Pause denies payload reads, enqueue, claim, ack, result, and future wake dispatch. Cancellation and owner controls remain available. Cancellation of an active request prevents a later canonical result and any not-yet-started wake. It cannot retract already disclosed data or cancel a network request, bot run, or external effect already started. Polling clients should recheck status before separately authorized work.
 
@@ -25,7 +25,7 @@ Expired leases return to pending up to a fixed attempt budget, then dead-letter.
 
 Payloads are bounded UTF-8 text. No shell, tool/model dispatch, attachments, file paths, arbitrary callback URL, or active rendering exists. URLs inside text are inert. Server-derived parent lineage is capped, but a malicious enrolled peer can start unrelated root requests; quotas/rate limits, not an unforgeable global causal graph, bound those. Independent peer permission systems remain essential.
 
-The relay does not log message text, tokens, webhook response bodies, or provider errors. Error responses are generic. Wrangler observability is disabled by default; infrastructure access logs and operator observability policies still need review. Payload text is purged after retention, while metadata and replay hashes remain until an explicitly reviewed lifecycle migration. Storage quotas stop new acceptance rather than evicting old deduplication history.
+The relay does not log message text, tokens, webhook response bodies, or provider errors, and it replaces the OAuth library's default error logging with a no-op. Error responses are generic. Wrangler observability is disabled by default; infrastructure access logs and operator observability policies still need review. Payload text is purged after retention, while metadata and replay hashes remain until an explicitly reviewed lifecycle migration. Storage quotas stop new acceptance rather than evicting old deduplication history.
 
 ## Optional wake adapter
 

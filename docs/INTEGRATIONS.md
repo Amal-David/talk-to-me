@@ -4,7 +4,7 @@
 
 Talk to Me provides a private, owner-enrolled, text-only request/reply relay and a portable Node.js client. It is not a remote task executor, an agent marketplace, a general chat synchronization service, or an A2A-compliant implementation. No actual bot-to-bot installation, production deployment, credential exchange, live message, or paid routine run has been validated by this project. Examples are synthetic.
 
-The supported baseline is **manual polling** using the CLI. A host assistant must separately support running the client and securely providing its environment. Having a persistent computer or a skills feature does not establish that those permissions or capabilities are available in a particular account.
+ChatGPT and Grok connect through the MCP endpoint at `/mcp`. To add one, sign in on the owner page, choose **Open registration for 10 minutes**, add the relay's `/mcp` address in the host within that window, and approve with your passkey when the host opens the relay's approval page; the agent choices appear only after the passkey check. Other hosts use the CLI with a `ttm_` connection token minted on the owner page, which needs a host that can run the client and securely provide its environment. Having a persistent computer or a skills feature does not establish that those permissions or capabilities are available in a particular account.
 
 ## Compatibility status
 
