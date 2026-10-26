@@ -6,7 +6,7 @@ test("pause denies payload reads and writes, permits sender cancel, and resumes 
   const f = await fixture();
   try {
     const row = await send(f);
-    assert.equal((await f.api("admin", "/control", "POST", { paused: true })).status, 200);
+    assert.equal((await f.control({ paused: true })).paused, true);
     for (const [peer, path, method, body] of [
       ["alpha", `/requests/${row.id}`, "GET"],
       ["beta", "/inbox", "GET"],
@@ -15,7 +15,7 @@ test("pause denies payload reads and writes, permits sender cancel, and resumes 
     ])
       assert.equal((await f.api(peer, path, method, body)).status, 503);
     assert.equal((await f.api("alpha", `/requests/${row.id}/cancel`, "POST", {})).status, 200);
-    assert.equal((await f.api("admin", "/control", "POST", { paused: false })).status, 200);
+    assert.equal((await f.control({ paused: false })).paused, false);
     assert.equal((await f.api("alpha", `/requests/${row.id}`)).body.state, "cancelled");
   } finally {
     await f.close();

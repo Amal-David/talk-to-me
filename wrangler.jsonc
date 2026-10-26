@@ -6,7 +6,21 @@
   "workers_dev": false,
   "preview_urls": false,
   "observability": { "enabled": false },
-  "durable_objects": { "bindings": [{ "name": "GROUPS", "class_name": "GroupMailbox" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GroupMailbox"] }],
-  "vars": { "POLICY_JSON": "{\"version\":1,\"groups\":{}}" }
+  "durable_objects": {
+    "bindings": [
+      { "name": "GROUPS", "class_name": "GroupMailbox" },
+      { "name": "OWNER", "class_name": "Owner" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GroupMailbox"] },
+    { "tag": "v2", "new_sqlite_classes": ["Owner"] }
+  ],
+  // Replace with the deployment's KV namespace ID; the OAuth library stores hashed tokens here.
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }],
+  "vars": {
+    "POLICY_JSON": "{\"version\":1,\"groups\":{}}",
+    // Observed in Phase 0: ChatGPT (including dots) and Grok chat.
+    "OAUTH_REDIRECT_URIS": "[\"https://chatgpt.com/connector_platform_oauth_redirect\",\"https://grok.com/connectors-oauth-exchange-code/\"]"
+  }
 }

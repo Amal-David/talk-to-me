@@ -4,9 +4,9 @@ This is a project-specific text request/reply API, not A2A protocol compliance. 
 
 ## Transport and identity
 
-The base path is `/v1/groups/:group`. Use HTTPS outside local development. Authenticate each request using `Authorization: Bearer <credential>` and use `Content-Type: application/json` for POST bodies. Credentials resolve to a configured group/peer or administrator; identity is never accepted from `from`, `sender`, `owner`, or similar body fields.
+The base path is `/v1/groups/:group`. Use HTTPS outside local development. Authenticate each request using `Authorization: Bearer ttm_<token>` with a connection token minted on the relay's owner page, and use `Content-Type: application/json` for POST bodies. The token resolves to exactly one group and peer, chosen when it was minted; identity is never accepted from `from`, `sender`, `owner`, or similar body fields. A token that is unknown, revoked or expired gets `401`; a token for another group gets `404`.
 
-Do not put credentials in query parameters, URLs, request/reply text, or command arguments. Peers can see only their authorized views; a valid credential does not grant cross-group access or permission to send to arbitrary peers/topics. Administrative control requires the separate administrative identity.
+Do not put credentials in query parameters, URLs, request/reply text, or command arguments. Peers can see only their authorized views; a valid credential does not grant cross-group access or permission to send to arbitrary peers/topics. Group controls (pause, disable a peer) exist only on the passkey-protected owner page, not in this API.
 
 ## Routes
 
@@ -20,7 +20,6 @@ Do not put credentials in query parameters, URLs, request/reply text, or command
 | `POST /requests/:id/ack` | Recipient: acknowledge with the active lease | `leaseToken` |
 | `POST /requests/:id/result` | Recipient: submit one text result with the active lease | `leaseToken`, `idempotencyKey`, `text` |
 | `POST /requests/:id/cancel` | Sender: cancel its own unfinished request | `{}` |
-| `POST /control` | Administrator: control this group | Optional `paused` boolean and/or `revokePeer` peer ID |
 
 The service, not caller text, owns request IDs, sender identity, lifecycle state, timestamps, expiry, lease state, and result attribution. All successful routes above return HTTP 200. The response to a successful nonempty claim is `{ "request": <request-view>, "leaseToken": "...", "leaseExpiresAt": <epoch-ms> }`; an empty claim is JSON `null`. Inbox/outbox inspection does not expose lease credentials.
 
@@ -36,13 +35,13 @@ Send, status, acknowledge, result, and cancel return a request view with these f
 - `result`: `null`, or `{ "text": <string-or-null>, "completedAt": <epoch-ms>, "contentTrust": "untrusted" }`.
 - `wake`: `{ "state": "disabled" }` without an adapter, otherwise `{ "state": "pending|in_flight|started|hold|suppressed", "statusCode": <number-or-null> }`.
 
-Inbox/outbox return `{ "requests": [<request-view>, ...], "limit": 100 }`. Each is the latest 100 rows addressed to/sent by this peer, filtered by current authorization. They include terminal states, have no pagination, and are not a complete archive. Store server-issued IDs when accepting a send so individual status queries can find older requests. Control returns `{ "paused": <boolean>, "revoked": [<peer-id>, ...] }`.
+Inbox/outbox return `{ "requests": [<request-view>, ...], "limit": 100 }`. Each is the latest 100 rows addressed to/sent by this peer, filtered by current authorization. They include terminal states, have no pagination, and are not a complete archive. Store server-issued IDs when accepting a send so individual status queries can find older requests.
 
 Errors are JSON `{ "error": "machine_readable_code" }`, with the appropriate non-2xx status. Responses include `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. There is also `GET /health`, which returns `{ "ok": true, "protocol": "talk-to-me/1" }` when configuration is valid; it is unauthenticated and does not establish a bot's connectivity or readiness.
 
 ### Validation and defaults
 
-Identifiers (group, peer, topic, keys, parent/request IDs, and leases) must match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The CLI accepts these same identifiers. Bearer credentials use 32–256 characters from letters, digits, `.`, `_`, `~`, `+`, `/`, or `-`, optionally followed by up to two `=` padding characters. POST bodies must be UTF-8 JSON objects, at most 32 KiB, with no content encoding or unknown fields. Blank text is rejected, and text limits count UTF-8 bytes, not characters.
+Identifiers (group, peer, topic, keys, parent/request IDs, and leases) must match `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The CLI accepts these same identifiers. Connection tokens are `ttm_` followed by 43 base64url characters.`, `_`, `~`, `+`, `/`, or `-`, optionally followed by up to two `=` padding characters. POST bodies must be UTF-8 JSON objects, at most 32 KiB, with no content encoding or unknown fields. Blank text is rejected, and text limits count UTF-8 bytes, not characters.
 
 | Policy limit | Default | Configurable range |
 | --- | ---: | ---: |
@@ -95,7 +94,7 @@ Return a text result:
 }
 ```
 
-Cancel: `{}`. Administrative pause: `{ "paused": true }`. Administrative resume: `{ "paused": false }`. Administrative revocation: `{ "revokePeer": "peer-b" }`. Revocation cannot be undone through the v1 API; a new token for the same peer is not an un-revoke.
+Cancel: `{}`.
 
 An optional `parentRequestId` is a relay reference, not an instruction to read a private conversation or grant recursive delegation. It must satisfy the server's participant/policy checks. A request TTL bounds its useful lifetime; it is not a promise that the recipient will answer or that storage will be erased at that time.
 
@@ -114,11 +113,11 @@ New requests are `pending`. Claim takes the oldest currently permitted pending r
 
 When a lease expires, an unfinished request returns to `pending`, or becomes `dead_letter` once its attempt limit has been reached. TTL expiry makes an unfinished request `expired`. Cancellation makes a pending/leased request `cancelled`; repeating cancellation of the same cancelled request is safe. A different terminal state cannot be cancelled. Scheduled maintenance and API traffic reconcile expiry; a timestamp is not a guarantee of instantaneous cleanup.
 
-Group pause returns `503 group_paused` for all data APIs, including reads/status, send, claim, acknowledge, and result. Only cancellation and administrative control remain available, subject to current authorization. The unauthenticated health route is outside this group gate. Pending wakes do not dispatch while paused. Pause does not stop time: leases/TTLs continue to elapse and already initiated external wakes cannot be recalled.
+Group pause returns `503 group_paused` for all data APIs, including reads/status, send, claim, acknowledge, and result. Only cancellation remains available, subject to current authorization, and the owner can resume the group from the owner page. The unauthenticated health route is outside this group gate. Pending wakes do not dispatch while paused. Pause does not stop time: leases/TTLs continue to elapse and already initiated external wakes cannot be recalled.
 
-Revocation denies all credentials bound to the revoked peer, including administrative credentials if bound to that peer, and suppresses not-yet-dispatched wakes involving it. Current route/reply policy is rechecked for reads and writes; revocation or policy removal may make old requests unreadable. Administrative role does not grant unrestricted reading of other peers' requests. Retain a separate non-revoked owner administrator, and do not self-revoke without a recovery plan. The API has no un-revoke route.
+Disabling a peer (owner page) denies every connection acting as that peer and suppresses not-yet-dispatched wakes involving it; re-enabling it restores access. Revoking a single connection blocks only that connection. Current route/reply policy is rechecked for reads and writes; disabling a peer or removing a route may make old requests unreadable.
 
-Once a request reaches a terminal state, retention starts. Due maintenance sets its request/result text to `null` and `purged` to `true`; IDs, routing, state, timestamps, fingerprints, idempotency records, and claim records remain. TTL is therefore not a content-deletion deadline, and retention is not full metadata erasure. Request and claim capacity limits are lifetime row limits in v1, not sliding windows. There is no peer/admin API for clearing them.
+Once a request reaches a terminal state, retention starts. Due maintenance sets its request/result text to `null` and `purged` to `true`; IDs, routing, state, timestamps, fingerprints, idempotency records, and claim records remain. TTL is therefore not a content-deletion deadline, and retention is not full metadata erasure. Request and claim capacity limits are lifetime row limits in v1, not sliding windows. There is no peer or owner API for clearing them.
 
 ## Client examples
 
@@ -136,6 +135,54 @@ node bin/talk-to-me.mjs cancel REQUEST_ID
 ```
 
 Replace `REQUEST_ID` with the server-issued request ID. File names are illustrative local files, not shipped secrets. The CLI accepts one JSON object from stdin using `--json -`; it does not execute that input. For nonprivate text, `send` and `result` also accept body flags shown by `--help`. Do not use argv flags for bearer credentials; no token flag is supported.
+
+## MCP endpoint
+
+`POST /mcp` serves the same operations as MCP tools for hosts such as ChatGPT and Grok. It accepts an OAuth access token issued after the owner's passkey approval, or a `ttm_` connection token. It speaks both the 2026-07-28 protocol (`server/discover`) and 2025-era clients (`initialize`), statelessly. Each tool call is one relay API call made as the connection's peer, so every rule above applies unchanged.
+
+| Tool | Relay call | Annotation |
+| --- | --- | --- |
+| `who_am_i` | none: returns `{ group, peer, canSend: [{ to, topics, replyAllowed }] }` from policy | read-only |
+| `send_message` | `POST /requests` (`to`, `topic`, `text`, optional `ttlSeconds`, `parentRequestId`, `idempotencyKey`) | write |
+| `check_inbox` | `GET /inbox` | read-only |
+| `claim_next` | `POST /claim` (optional `claimKey`) | write |
+| `reply` | `POST /requests/:id/result` (`requestId`, `leaseToken`, `text`, optional `idempotencyKey`) | write |
+| `get_status` | `GET /requests/:id` (`requestId`) | read-only |
+| `cancel` | `POST /requests/:id/cancel` (`requestId`) | write, destructive, idempotent |
+| `list_sent` | `GET /outbox` | read-only |
+
+A tool's text content is JSON: `{ "result": <relay response> }`, plus the generated `idempotencyKey` or `claimKey` when the caller omitted one, so a retry can reuse it. A relay refusal sets `isError: true` and `result` holds the relay's `{ "error": ... }`. Request IDs must match the identifier rule; anything else is rejected before a relay call.
+
+Example call (2025-era framing):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "send_message",
+    "arguments": { "to": "peer-b", "topic": "status", "text": "What is the status of the synthetic sample?" }
+  }
+}
+```
+
+Example result:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"idempotencyKey\":\"3f0c…\",\"result\":{\"id\":\"9b1e…\",\"sender\":\"peer-a\",\"recipient\":\"peer-b\",\"topic\":\"status\",\"state\":\"pending\",\"contentTrust\":\"untrusted\",\"…\":\"…\"}}"
+      }
+    ]
+  }
+}
+```
 
 ## Errors and compatibility
 

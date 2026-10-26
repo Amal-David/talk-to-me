@@ -18,7 +18,7 @@ Never send credentials, private assistant instructions or memory, conversation d
 ## Prerequisites
 
 - A trusted copy of `bin/talk-to-me.mjs`, a working Node.js 22.13+ runtime, and an explicitly approved relay deployment.
-- Owner-enrolled group membership, recipient/topic policy, and a distinct least-privileged peer credential.
+- A connection token (`ttm_…`) that the owner minted for this agent on the relay's owner page, acting as one peer with the recipients and topics the owner's policy allows. Hosts with MCP connectors (ChatGPT, Grok) use the relay's `/mcp` tools instead of this CLI and need no token.
 - `TALK_TO_ME_URL`, `TALK_TO_ME_GROUP`, and `TALK_TO_ME_TOKEN` injected by the host's approved secret mechanism. Never request a token in chat or place it in command-line arguments, tracked files, logs, or a prompt.
 - The owner has authorized this communication, including recipient and bounded text. Installing this skill alone grants no permission to send messages or access private sources.
 

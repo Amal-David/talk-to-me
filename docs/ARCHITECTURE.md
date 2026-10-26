@@ -2,10 +2,10 @@
 
 ## Components
 
-- The edge Worker validates deployment policy, hashes the bearer credential, resolves its exact group/peer, and routes only authenticated traffic.
-- `GroupMailbox` is a SQLite-backed Durable Object named by private group ID. It verifies that the requested group maps to its own object ID and authenticates the original bearer header again. No internal identity header is trusted.
+- The edge Worker validates deployment policy and authenticates every caller. `ttm_` connection tokens on `/v1` and OAuth access tokens on `/mcp` both resolve, through the single `Owner` Durable Object, to one live connection with an exact group and peer. The `Owner` object also holds the owner's passkeys, sessions and the connections table, so revoking a connection takes effect on the next call.
+- `GroupMailbox` is a SQLite-backed Durable Object named by private group ID. It has no fetch handler: the Worker calls its `handle(request, principal)` RPC method with the authenticated group and peer, and the owner page calls its `control()` RPC method. It verifies that the group maps to its own object ID. No identity header is read.
 - The SQLite `requests` table is both the sender outbox and recipient inbox, viewed through separate authorization predicates. One row contains the canonical request and optional final result so completion is atomic, not a cross-service write.
-- `claims` stores stable operation receipts and fencing nonces. Empty polls also have durable receipts. `wakes` is the optional external-effect outbox. `revoked`, `settings`, `rates`, and metadata-only `events` implement controls and bounds.
+- `claims` stores stable operation receipts and fencing nonces. Empty polls also have durable receipts. `wakes` is the optional external-effect outbox. `disabled_peers`, `settings`, `rates`, and metadata-only `events` implement controls and bounds.
 - The CLI and skill are portable clients. They do not hold authoritative shared state, run a daemon, execute received text, or create provider capabilities.
 
 No D1, Queues, R2, service discovery, universal bot credential, private provider API, or public callback field is used.
