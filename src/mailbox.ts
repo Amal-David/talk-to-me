@@ -335,7 +335,7 @@ export class GroupMailbox extends DurableObject<Env> {
     }
   }
   // Called only by the Owner object after it has checked the owner's session.
-  control(group: string, change: GroupControl): GroupState {
+  async control(group: string, change: GroupControl): Promise<GroupState> {
     this.assertBound(group);
     this.ctx.storage.transactionSync(() => {
       if (change.paused !== undefined)
@@ -360,6 +360,8 @@ export class GroupMailbox extends DurableObject<Env> {
         "DELETE FROM events WHERE request_id IS NULL AND seq NOT IN (SELECT seq FROM events WHERE request_id IS NULL ORDER BY seq DESC LIMIT 1000)",
       );
     });
+    // Resuming must bring held-back wakes due again without waiting for other traffic.
+    await this.schedule();
     return this.status(group);
   }
   // Read-only, for the owner page; it never writes or creates group state.
@@ -528,10 +530,10 @@ export class GroupMailbox extends DurableObject<Env> {
       const pending = this.first<WakeRow>(
         "SELECT * FROM wakes WHERE state='pending' ORDER BY request_id LIMIT 1",
       );
-      if (!pending) return undefined;
+      // A pause holds wakes back; they stay pending and go out after resume.
+      if (!pending || this.paused()) return undefined;
       const row = this.get(pending.request_id);
       if (
-        this.paused() ||
         row.state !== "pending" ||
         row.expires_at <= Date.now() ||
         !this.permitted(policy, row) ||
@@ -552,8 +554,14 @@ export class GroupMailbox extends DurableObject<Env> {
     await this.ctx.storage.sync(); // Persist intent BEFORE any external effect.
     // Sync can yield: recheck all mutable gates, then initiate fetch without another yield.
     const current = this.get(job.id);
+    if (this.paused()) {
+      this.sql.exec(
+        "UPDATE wakes SET state='pending',attempted_at=NULL WHERE request_id=? AND state='in_flight'",
+        job.id,
+      );
+      return;
+    }
     if (
-      this.paused() ||
       current.state !== "pending" ||
       current.expires_at <= Date.now() ||
       !this.permitted(policy, current)
