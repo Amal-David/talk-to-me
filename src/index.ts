@@ -50,6 +50,15 @@ export default {
       // Without a valid relay origin and redirect allowlist there are no OAuth endpoints at all.
       return relayRoutes(request, env);
     }
+    // New OAuth clients may register only while the owner has registration open.
+    if (new URL(request.url).pathname === "/register" && !(await owner(env).registrationOpen()))
+      return response(
+        {
+          error: "access_denied",
+          error_description: "Client registration is closed; open it from the relay's owner page.",
+        },
+        403,
+      );
     return oauthProvider(origin, allowlist, relayRoutes).fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

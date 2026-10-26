@@ -5,7 +5,16 @@ import {
   type OAuthHelpers,
   OAuthProvider,
 } from "@cloudflare/workers-oauth-provider";
-import { config, connectionDays, identities, identity, identityKey, LABEL_MAX } from "./config";
+import {
+  CONNECTION_DAYS,
+  config,
+  connectionDays,
+  identities,
+  identity,
+  identityKey,
+  identityLabel,
+  LABEL_MAX,
+} from "./config";
 import { mcpResponse } from "./mcp";
 import { approvalPage } from "./owner-pages";
 import type { ConnectionProps, Env } from "./types";
@@ -33,8 +42,8 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
     if (!allowlist.includes(authRequest.redirectUri)) fail(400, "redirect_not_allowed");
     const details = await oauth.describeConsent(authRequest);
     const consent = await oauth.beginConsent(authRequest);
-    const page = approvalPage(details, consent.handle, identities(config(env)));
-    return withLibraryHeaders(page, consent.headers);
+    // No agent names on this page: anyone can reach it, so they appear only after the passkey.
+    return withLibraryHeaders(approvalPage(details, consent.handle), consent.headers);
   }
   if (request.method !== "POST") fail(405, "method_not_allowed");
   if (request.headers.get("origin") !== new URL(request.url).origin) fail(403, "origin_mismatch");
@@ -46,13 +55,27 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
     const denied = await oauth.denyConsent(request, handle);
     return withLibraryHeaders(response({ redirectTo: denied.redirectTo }), denied.headers);
   }
-  fields(body, ["handle", "decision", "assertion", "identity", "days"]);
+  const relayOwner = owner(env);
+  // Step 1: the owner's passkey, checked before the consent is consumed so a failed touch can
+  // be retried. Only then does the page learn which agents a connection may act as.
+  if (body.decision === "verify") {
+    fields(body, ["handle", "decision", "assertion"]);
+    if (!(await relayOwner.verifyApproval(handle, body.assertion)))
+      fail(401, "passkey_not_verified");
+    return response({
+      identities: identities(config(env)).map((i) => ({
+        id: identityKey(i),
+        label: identityLabel(i),
+      })),
+      days: CONNECTION_DAYS,
+    });
+  }
+  // Step 2: the owner's choice, accepted once per verified approval.
+  fields(body, ["handle", "decision", "identity", "days"]);
   if (body.decision !== "approve") fail(400, "invalid_decision");
   const target = identity(config(env), body.identity);
   const days = connectionDays(body.days);
-  const relayOwner = owner(env);
-  // The passkey check comes before consuming the consent, so a failed touch can be retried.
-  if (!(await relayOwner.verifyApproval(handle, body.assertion))) fail(401, "passkey_not_verified");
+  if (!(await relayOwner.consumeApproval(handle))) fail(401, "passkey_not_verified");
   const approved = await oauth.approveConsent(request, handle);
   const authRequest = approved.request;
   // Checked again because the allowlist can change between page load and approval.

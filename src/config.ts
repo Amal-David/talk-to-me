@@ -149,6 +149,9 @@ export function identities(cfg: Config): Identity[] {
     })),
   );
 }
+// How the owner sees an identity when choosing one for a connection.
+export const identityLabel = ({ group, peer, routes }: Identity) =>
+  `${peer} in ${group}, can send to: ${routes.map((r) => `${r.to} (${r.topics.join(", ")})`).join("; ") || "nothing"}`;
 // A connection's identity travels as "group/peer"; neither part can contain "/".
 export const identityKey = ({ group, peer }: Pick<Identity, "group" | "peer">) =>
   `${group}/${peer}`;
