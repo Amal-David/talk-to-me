@@ -71,14 +71,19 @@ function relayServer(env: Env, principal: Principal): McpServer {
       annotations: READ,
     },
     async () => {
+      // Answer only as the data tools would: not for a paused group or a disabled peer.
+      const state = await env.GROUPS.get(env.GROUPS.idFromName(principal.group)).status(
+        principal.group,
+      );
+      if (state.paused) return textResult({ result: { error: "group_paused" } }, true);
+      if (state.disabled.includes(principal.peer))
+        return textResult({ result: { error: "peer_disabled" } }, true);
       const me = identities(config(env)).find(
         (i) => i.group === principal.group && i.peer === principal.peer,
       );
-      const canSend = (me?.routes ?? []).map((r) => ({
-        to: r.to,
-        topics: r.topics,
-        replyAllowed: r.reply,
-      }));
+      const canSend = (me?.routes ?? [])
+        .filter((r) => !state.disabled.includes(r.to))
+        .map((r) => ({ to: r.to, topics: r.topics, replyAllowed: r.reply }));
       return textResult({ ...principal, canSend });
     },
   );

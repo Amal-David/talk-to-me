@@ -20,16 +20,16 @@ const form = (fields) => ({
 });
 
 // Opens the owner's registration window, then registers a client the way a host does.
-async function register(f, cookie, redirect = REDIRECT) {
+async function register(f, cookie, redirect = REDIRECT, name = "Synthetic host") {
   assert.equal((await f.owner("/owner/registration/open", {}, { cookie })).status, 200);
-  return registerClosed(f, redirect);
+  return registerClosed(f, redirect, name);
 }
-function registerClosed(f, redirect = REDIRECT) {
+function registerClosed(f, redirect = REDIRECT, name = "Synthetic host") {
   return call(
     f,
     "/register",
     json({
-      client_name: "Synthetic host",
+      client_name: name,
       redirect_uris: [redirect],
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
@@ -278,6 +278,26 @@ test("agents whose IDs contain a colon can be approved", async () => {
     const tokens = await connect(f, key, clientId, "demo/bot:one");
     const me = await whoami(f, tokens.access_token);
     assert.deepEqual([me.status, me.data.peer], [200, "bot:one"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an app's self-chosen name is cleaned, kept short, and never hides where access goes", async () => {
+  const f = await oauthFixture();
+  try {
+    const { key, cookie } = await setUp(f);
+    const tooLong = await register(f, cookie, REDIRECT, "x".repeat(201));
+    assert.deepEqual([tooLong.status, tooLong.body.error], [400, "invalid_client_metadata"]);
+    // A right-to-left override would make "moc.tpgtahc" display as "chatgpt.com".
+    const name = `\u202emoc.tpgtahc\u202c ${"y".repeat(100)}`;
+    const clientId = (await register(f, cookie, REDIRECT, name)).body.client_id;
+    const consent = await beginConsent(f, clientId);
+    assert.equal(consent.html.includes("\u202e"), false);
+    assert.ok(consent.html.includes(`moc.tpgtahc ${"y".repeat(48)}…`));
+    await connect(f, key, clientId);
+    const home = (await f.owner("/owner", undefined, { cookie })).body;
+    assert.ok(home.includes("chatgpt.com: moc.tpgtahc"));
   } finally {
     await f.close();
   }

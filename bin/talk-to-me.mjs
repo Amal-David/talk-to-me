@@ -78,8 +78,11 @@ export function configuration(env = process.env) {
   }
   const group = segment(env.TALK_TO_ME_GROUP, "TALK_TO_ME_GROUP");
   const token = assertString(env.TALK_TO_ME_TOKEN, "TALK_TO_ME_TOKEN");
-  if (!/^[A-Za-z0-9._~+/-]{32,256}={0,2}$/.test(token)) {
-    throw new ClientError("TALK_TO_ME_TOKEN does not match the relay's bearer credential format.");
+  // Only connection tokens minted on the relay's owner page; anything else never leaves the machine.
+  if (!/^ttm_[A-Za-z0-9_-]{43}$/.test(token)) {
+    throw new ClientError(
+      "TALK_TO_ME_TOKEN must be a ttm_ connection token from the relay's owner page.",
+    );
   }
   return { origin: url.origin, group, token };
 }

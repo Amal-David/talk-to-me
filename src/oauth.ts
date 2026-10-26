@@ -16,7 +16,7 @@ import {
   LABEL_MAX,
 } from "./config";
 import { mcpResponse } from "./mcp";
-import { approvalPage } from "./owner-pages";
+import { approvalPage, cleanName } from "./owner-pages";
 import type { ConnectionProps, Env } from "./types";
 import { bodyJson, digest, errorResponse, fail, fields, response, textValue } from "./validation";
 
@@ -84,7 +84,8 @@ async function authorize(request: Request, env: OAuthEnv, allowlist: string[]): 
   const props = await relayOwner.createConnection({
     ...target,
     days,
-    label: Array.from(`${details.clientName} → ${details.redirectHost}`)
+    // Host first, so truncating a long self-chosen name never hides where access goes.
+    label: Array.from(`${details.redirectHost}: ${cleanName(details.clientName)}`)
       .slice(0, LABEL_MAX)
       .join(""),
     credential: { kind: "oauth", clientId: authRequest.clientId },
@@ -153,6 +154,9 @@ export function oauthProvider(
       const uris = clientMetadata.redirect_uris;
       if (!Array.isArray(uris) || !uris.length || !uris.every((uri) => allowlist.includes(uri)))
         return { code: "invalid_redirect_uri", description: "redirect_uri is not allowed" };
+      const name = clientMetadata.client_name;
+      if (typeof name === "string" && name.length > 200)
+        return { code: "invalid_client_metadata", description: "client_name is too long" };
       return undefined;
     },
     tokenExchangeCallback: async ({ grantType, props, env }) => {
@@ -166,6 +170,8 @@ export function oauthProvider(
         throw new OAuthError("invalid_grant", { description: "connection is no longer active" });
       return undefined;
     },
+    // The default logs error descriptions, some of which echo caller input.
+    onError: () => undefined,
     resolveExternalToken: async ({ token, env }) => {
       const props = await owner(env).tokenConnection(token);
       return props ? { props, audience: resource } : null;

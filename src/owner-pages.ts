@@ -165,13 +165,27 @@ run('out', async () => { await post('/owner/sign-out', {}); location.href = '/ow
   );
 }
 
+// An OAuth client names itself, so its name is untrusted: drop control and direction-override
+// characters, collapse whitespace and keep it short.
+export function cleanName(name: string): string {
+  const chars = Array.from(
+    name
+      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+  if (!chars.length) return "Unnamed app";
+  return chars.length > 60 ? `${chars.slice(0, 60).join("")}…` : chars.join("");
+}
+
 export function approvalPage(
   consent: { clientName: string; clientDomain?: string; redirectHost: string },
   handle: string,
 ): Response {
   return page(
-    `Connect ${consent.clientName}?`,
-    `<p>${consent.clientDomain ? `Published by <strong>${escapeHtml(consent.clientDomain)}</strong>.` : "This app registered itself; its name is not verified."}</p>
+    "Connect an app?",
+    `<p>The app calls itself <strong>"${escapeHtml(cleanName(consent.clientName))}"</strong>.</p>
+<p>${consent.clientDomain ? `Published by <strong>${escapeHtml(consent.clientDomain)}</strong>.` : "This app registered itself; its name is not verified."}</p>
 <p>Access will be sent to <strong>${escapeHtml(consent.redirectHost)}</strong>.</p>
 <p>Approve only a connection you just started yourself.</p>
 <p><button id="verify">Approve with passkey</button> <button id="deny">Deny</button></p>
